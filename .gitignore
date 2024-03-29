@@ -1,0 +1,5 @@
+# Anvay and Charles have different include paths, so this stays local.
+compile_flags.txt
+**/*.ll
+**/*.so
+llvm-dir
