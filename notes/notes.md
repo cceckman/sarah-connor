@@ -96,3 +96,9 @@ rules, as we get more?)
 For now, we have [redo rules](https://redo.readthedocs.io/en/latest/); can
 invoke as `./do <thing you want>` without installing anything.
 
+
+### next milestones (4/2)
+- Actually count basic blocks in a function
+- Make use of annotations: Add LLVM attributes in the source to do something where
+we add an annotation in one function to request an analysis of another function
+- Graph basic blocks of a function
