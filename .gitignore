@@ -1,10 +1,5 @@
-# Anvay and Charles have different include paths, so this stays local.
-compile_flags.txt
-**/*.ll
-**/*.so
-llvm-dir
-.redo/
-.vscode/
-**/*.dylib
-**/*.deps
-**/*.dSYM
+# Build outputs and redo working files don't get checked in.
+
+build/*
+-build/*.do
+
