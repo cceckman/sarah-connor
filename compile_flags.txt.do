@@ -10,8 +10,8 @@ EOF
 else
     # Fill in OS X flags here?
     cat <<EOF
--I/usr/nothere/llvm-17
--I/usr/nothere/llvm-c-17
+-I/opt/homebrew/opt/llvm@17/include
+-L/opt/homebrew/opt/llvm@17/lib
 EOF
 
 fi

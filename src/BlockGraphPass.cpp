@@ -10,8 +10,12 @@
 // New PM interface
 //------------------------------------------------------------------------------
 
+struct IntWrapper {
+  int result;
+};
+
 struct BlockGraphPass : public llvm::AnalysisInfoMixin<BlockGraphPass> {
-  using Result = unsigned;
+  using Result = IntWrapper;
   Result run(llvm::Function &F, llvm::FunctionAnalysisManager &);
   // Part of the official API:
   //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
@@ -52,7 +56,7 @@ BlockGraphPrinter::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
   BlockGraphPass::Result &result = FAM.getResult<BlockGraphPass>(F);
 
   OS << "BIG NEWS!\n";
-  OS << "Function "  << F.getName() << " has " << result << " basic blocks\n";
+  OS << "Function "  << F.getName() << " has " << result.result << " basic blocks\n";
 
   return llvm::PreservedAnalyses::all();
 }
@@ -64,18 +68,18 @@ llvm::PassPluginLibraryInfo getBlockGraphPassPluginInfo() {
           [](PassBuilder &PB) {
             // #1 REGISTRATION FOR "opt -passes=print<static-cc>"
             PB.registerPipelineParsingCallback(
-                [&](StringRef Name, ModulePassManager &MPM,
+                [&](StringRef Name, FunctionPassManager &FPM,
                     ArrayRef<PassBuilder::PipelineElement>) {
                   if (Name == "print<block-graph-pass>") {
-                    MPM.addPass(BlockGraphPrinter(llvm::errs()));
+                    FPM.addPass(BlockGraphPrinter(llvm::errs()));
                     return true;
                   }
                   return false;
                 });
             // #2 REGISTRATION FOR "MAM.getResult<StaticCallCounter>(Module)"
             PB.registerAnalysisRegistrationCallback(
-                [](ModuleAnalysisManager &MAM) {
-                  MAM.registerPass([&] { return BlockGraphPass(); });
+                [](FunctionAnalysisManager &FAM) {
+                  FAM.registerPass([&] { return BlockGraphPass(); });
                 });
           }};
 };

@@ -4,5 +4,5 @@ then
     echo "$(llvm-config-17 --prefix)"
 else
     # Fill in OS X flags here?
-    echo "your LLVM prefix path here!"
+    echo "/opt/homebrew/opt/llvm@17"
 fi
