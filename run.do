@@ -1,19 +1,26 @@
-redo-ifchange llvm-dir compile_flags.txt src/BlockGraphPass.dylib src/BlockGraphPass.ll
 
-LLVM_DIR="$(cat llvm-dir)"
 
-# This script is invoked as:
-#   redo src/BlockGraphPass.ll
-# ->
-#   default.ll.do src/BlockGraphPass.ll src/BlockGraphPass temp >temp
-# So $1 is "the path of the file being built",
-#    $2 is "that, minus the target extension"
-#    $3 a temporary file, where we should put our output
-#    alternatively, stdout is also routed to that output
+if uname -a | grep -q Linux
+then
+    PASS_TARGET="build/BlockGraphPass.so"
+else
+    # Assume OS X
+    PASS_TARGET="build/BlockGraphPass.dylib"
+fi
 
-FLAGS="$(cat compile_flags.txt)"
 
-$LLVM_DIR/bin/opt -load-pass-plugin \
-    ./src/BlockGraphPass.dylib \
+
+redo-ifchange \
+  build/llvm-dir \
+  build/compile_flags.txt \
+  "$PASS_TARGET" \
+  build/BlockGraphPass.ll
+
+LLVM_DIR="$(cat build/llvm-dir)"
+FLAGS="$(cat build/compile_flags.txt)"
+
+"$LLVM_DIR"/bin/opt -load-pass-plugin \
+    "$PASS_TARGET" \
     -passes="print<block-graph-pass>" \
-    -disable-output src/BlockGraphPass.ll
+    -disable-output build/BlockGraphPass.ll
+
