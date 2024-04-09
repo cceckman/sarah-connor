@@ -12,12 +12,12 @@ fi
 
 redo-ifchange \
   build/llvm-dir \
-  build/compile_flags.txt \
+  compile_flags.txt \
   "$PASS_TARGET" \
   build/BlockGraphPass.ll
 
 LLVM_DIR="$(cat build/llvm-dir)"
-FLAGS="$(cat build/compile_flags.txt)"
+FLAGS="$(cat compile_flags.txt)"
 
 "$LLVM_DIR"/bin/opt -load-pass-plugin \
     "$PASS_TARGET" \

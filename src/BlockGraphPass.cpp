@@ -2,20 +2,22 @@
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
-#include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Demangle/Demangle.h"
+#include <cstdio>
 
 //------------------------------------------------------------------------------
 // New PM interface
 //------------------------------------------------------------------------------
 
-struct IntWrapper {
-  int result;
+struct BlockGraphResult {
+  std::string entry_block_name;
 };
 
 struct BlockGraphPass : public llvm::AnalysisInfoMixin<BlockGraphPass> {
-  using Result = IntWrapper;
+  using Result = BlockGraphResult;
   Result run(llvm::Function &F, llvm::FunctionAnalysisManager &);
   // Part of the official API:
   //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
@@ -48,7 +50,10 @@ llvm::AnalysisKey BlockGraphPass::Key;
 
 BlockGraphPass::Result BlockGraphPass::run(llvm::Function &F,
                                            llvm::FunctionAnalysisManager &) {
-  return BlockGraphPass::Result();
+  const auto &block = F.getEntryBlock();
+  return BlockGraphPass::Result{
+      .entry_block_name = std::string(F.getEntryBlock().getName()),
+  };
 }
 
 llvm::PreservedAnalyses
@@ -56,11 +61,11 @@ BlockGraphPrinter::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
   BlockGraphPass::Result &result = FAM.getResult<BlockGraphPass>(F);
 
   OS << "BIG NEWS!\n";
-  OS << "Function "  << F.getName() << " has " << result.result << " basic blocks\n";
+  OS << "Function " << demangle(F.getName()) << " has an entry block named "
+     << result.entry_block_name << "\n";
 
   return llvm::PreservedAnalyses::all();
 }
-
 
 llvm::PassPluginLibraryInfo getBlockGraphPassPluginInfo() {
   using namespace ::llvm;

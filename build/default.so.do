@@ -2,10 +2,10 @@
 SOURCE="../src/${2}.cpp"
 DEPFILE="${2}.deps"
 
-redo-ifchange llvm-dir compile_flags.txt "$SOURCE"
+redo-ifchange llvm-dir ../compile_flags.txt "$SOURCE"
 
 LLVM_DIR="$(cat llvm-dir)"
-FLAGS="$(cat compile_flags.txt)"
+FLAGS="$(cat ../compile_flags.txt)"
 
 "$LLVM_DIR"/bin/clang++ \
     $FLAGS \

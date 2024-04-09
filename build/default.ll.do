@@ -12,9 +12,9 @@ SOURCE="../src/${2}.cpp"
 
 LLVM_DIR="$(cat llvm-dir)"
 
-redo-ifchange llvm-dir compile_flags.txt "$SOURCE"
+redo-ifchange llvm-dir ../compile_flags.txt "$SOURCE"
 
-FLAGS="$(cat compile_flags.txt)"
+FLAGS="$(cat ../compile_flags.txt)"
 
 "$LLVM_DIR"/bin/clang++ \
     $FLAGS \
