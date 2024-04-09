@@ -2,4 +2,6 @@
 
 build/*
 -build/*.do
+*.svg
+compile_flags.txt
 
