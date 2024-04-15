@@ -97,8 +97,17 @@ For now, we have [redo rules](https://redo.readthedocs.io/en/latest/); can
 invoke as `./do <thing you want>` without installing anything.
 
 
-### next milestones (4/2)
+### Milestones (4/15)
+
+- [x]   Graph basic blocks of a function
+- [ ]   Understand LLVM attributes [1](https://llvm.org/docs/HowToUseAttributes.html),
+  or do I mean metadata or something else? [2](https://blog.yossarian.net/2021/11/29/LLVM-internals-part-4-attributes-and-attribute-groups)
+- [ ]   Pick CFG root to render based on an attribute
+- [ ]   Understand how calls are represented in the LLVM-IR. Represent them
+        in the CFG rendering
+- [ ]   Understand how to control optimization passes, e.g. inlining
+
 - Actually count basic blocks in a function
 - Make use of annotations: Add LLVM attributes in the source to do something where
 we add an annotation in one function to request an analysis of another function
-- Graph basic blocks of a function
+
