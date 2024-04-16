@@ -111,3 +111,40 @@ invoke as `./do <thing you want>` without installing anything.
 - Make use of annotations: Add LLVM attributes in the source to do something where
 we add an annotation in one function to request an analysis of another function
 
+## Cross-function analysis?
+
+On a per-function basis:
+- Assert that the CFG (basic blocks) form a DAG
+    (initial, "conservative" version)
+- Return all called functions
+
+On a per-module basis (cross-module basis?)
+- Assert that the graph of function calls is a DAG
+    (again, conservative - excludes recursion and mutual recursion)
+- Assert that the closure of functions called by an always-terminates function are also always-terminates
+
+Lattices?
+
+definitely does not terminate
+may or may not terminate
+does terminate
+
+Combine two functions... eh, no, it's more complicated: result depends on whether call is conditional.
+
+## Alternative/additional
+
+http://rgrig.blogspot.com/2009/10/dtfloatleftclearleft-summary-of-some.html
+
+Instead of "CFG is a DAG", if it's a reducible flow graph: results from
+structured programming. `for` or `while`; only excludes gotos.
+
+(Non-Reduceable: strongly connected subgraph with more than one entry)
+
+Loop is a strongly connected subgraph: _path_ (not edge) from each node to each other node
+
+Can we do a heuristic on the entry point-
+what the induction variable of the loop is, and run induction on it?
+
+## Future: symbolic execution
+
+At some point, break out KLEE...

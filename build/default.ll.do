@@ -8,17 +8,18 @@
 #    $2 is "that, minus the target extension"
 #    $3 a temporary file, where we should put our output
 #    alternatively, stdout is also routed to that output
-SOURCE_CPP="../src/${2}.cpp"
-SOURCE_C="../src/${2}.c"
+for F in "../testdata/${2}.cpp" "../testdata/${2}.c" "../src/${2}.c" "../src/${2}.cpp"
+do
+    if test -f "$F"
+    then
+        SOURCE="$F"
+        break
+    fi
+done
 
-if test -f "$SOURCE_CPP"
+if test -z "$SOURCE"
 then
-    SOURCE="$SOURCE_CPP"
-elif test -f "$SOURCE_C"
-then
-    SOURCE="$SOURCE_C"
-else
-    echo >&2 "No source found!"
+    echo >&2 "No source found for $2"
     exit 1
 fi
 
