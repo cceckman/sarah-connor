@@ -3,5 +3,8 @@
 build/*
 -build/*.do
 *.svg
+loops/*.loops
+**.did
+**.dylib
+**.ll
 compile_flags.txt
-
