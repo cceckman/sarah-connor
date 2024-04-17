@@ -145,6 +145,11 @@ Loop is a strongly connected subgraph: _path_ (not edge) from each node to each 
 Can we do a heuristic on the entry point-
 what the induction variable of the loop is, and run induction on it?
 
+Do we (initially) defer on indirect calls?
+
+
+
+
 ## Future: symbolic execution
 
 At some point, break out KLEE...
