@@ -34,11 +34,6 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
   return result;
 }
 
-struct Block {
-  std::string name;
-  std::string llvm_name;
-};
-
 struct SCCLoopPassResult {
   std::set<std::string> blocks_with_loops;
 };
