@@ -147,7 +147,13 @@ what the induction variable of the loop is, and run induction on it?
 
 Do we (initially) defer on indirect calls?
 
+## Call graph analysis
 
+https://llvm.org/doxygen/classllvm_1_1LazyCallGraph.html
+and 
+https://llvm.org/doxygen/classllvm_1_1LazyCallGraph_1_1SCC.html
+
+https://eli.thegreenplace.net/2013/09/16/analyzing-function-cfgs-with-llvm
 
 
 ## Future: symbolic execution
