@@ -156,6 +156,72 @@ https://llvm.org/doxygen/classllvm_1_1LazyCallGraph_1_1SCC.html
 https://eli.thegreenplace.net/2013/09/16/analyzing-function-cfgs-with-llvm
 
 
+Inline of a different member - invoke vs. call?
+
+[Terminator instructions](https://llvm.org/docs/LangRef.html#terminator-instructions):
+Because the calee may go to the normal branch or the exception branch
+
+How are exceptions thrown? By `__cxa_throw`... after callocating an exception structure:
+- C++ information - thrown object, type info (because the catcher can pattern-match on the type info),
+  and libunwind info
+
+catch blocks match typeid to either catch, or keep propagating up.
+
+What is in cxa_throw?
+
+We say "IDK" for `invoke`. Just look at call; not tail calls.
+
+## On attributes/annotations
+
+Can we overload `mustprogress` or `mustreturn` to mean what we want?
+
+- These are LLVM attributes.
+- Can they be applied in a header, so they show up for external functions even when LLVM isn't privy to the definition?
+    - `noreturn` is a Clang attribute.
+    - `pure` can be applied manually (though that doesn't imply "terminates"...)
+    - `annotate` is Clang attribute...?
+
+    - [ ] AI: cceckman to look through clang attributes
+
+We treat "noreturn" as "treat this branch as no".
+We treat "mustreturn" and/or "mustprogress" as "yes".
+
+"Color" each path through the function as "yes, maybe, no". Join along paths.
+
+Color an SCC locally, based on vectorizeablity? And/or loop annotations (i.e. llvm.loop.mustprogress?)
+And then color the DAG of SCCs
+
+- Color blocks based on structure and calls
+- Color SCCs based on
+    1. Color of blocks + cycle: if present, IDK (conservative)
+    2. Inductive analysis (not conservative; better analysis); mustprogress
+- Walk DAG and join branches
+- Apply to function as a whole
+
+
+## On inlining
+
+Clang/LLVM really likes to inline within a module - at least for the stuff we've tried.
+This means two things:
+
+1.  It's important that we be able to run analysis on _regions of functions_, e.g. between
+    call and destructor.
+
+    - [x] AI: how does a RAII object look?
+
+2.  We shouldn't expect a lot of information about calls - only the external signature.
+    We probably can't _analyze_ the call target unless we're doing an LTO pass.
+    And even then we can't necessarily analyze the call target (if it's dynamically linked).
+
+    That said: if the call target is dynamically linked, that's going to make the execution
+    time highly variable too. So probably out of scope to call dynamically-linked functions
+    in a critical section - we don't need to correctly analyze that result,
+    just return "IDK".
+
+    - [ ] AI: Can we do an LTO pass?
+
+
+
 ## Future: symbolic execution
 
 At some point, break out KLEE...
