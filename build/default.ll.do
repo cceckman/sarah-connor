@@ -23,11 +23,8 @@ then
     exit 1
 fi
 
-
-LLVM_DIR="$(cat llvm-dir)"
-
 redo-ifchange llvm-dir ../compile_flags.txt "$SOURCE"
-
+LLVM_DIR="$(cat llvm-dir)"
 FLAGS="$(cat ../compile_flags.txt)"
 
 "$LLVM_DIR"/bin/clang \
