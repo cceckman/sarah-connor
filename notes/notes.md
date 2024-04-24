@@ -199,6 +199,13 @@ And then color the DAG of SCCs
 - Apply to function as a whole
 
 
+## Custom attributes
+
+BPF wanted to use annotate, stymied by not having documentation: https://groups.google.com/g/llvm-dev/c/CqpXrMUMiR8/m/3hAsOn-cBQAJ
+Pointed to https://blog.quarkslab.com/implementing-a-custom-directive-handler-in-clang.html
+
+...but that doesn't seem to map to the LLVM IR annotation concept.
+
 ## On inlining
 
 Clang/LLVM really likes to inline within a module - at least for the stuff we've tried.

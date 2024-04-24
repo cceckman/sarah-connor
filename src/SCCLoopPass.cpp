@@ -4,6 +4,8 @@
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
@@ -35,6 +37,7 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
 }
 
 struct SCCLoopPassResult {
+  std::set<llvm::MDNode*> metadata;
   std::set<std::string> blocks_with_loops;
 };
 
@@ -73,6 +76,12 @@ llvm::AnalysisKey SCCLoopPass::Key;
 SCCLoopPass::Result SCCLoopPass::run(llvm::Function &F,
                                      llvm::FunctionAnalysisManager &) {
   SCCLoopPass::Result result;
+  llvm::SmallVector<std::pair<unsigned int, llvm::MDNode*>> md;
+  F.getAllMetadata(md);
+  for(const auto md : md) {
+    result.metadata.emplace(md.second);
+  }
+
   for (llvm::scc_iterator<llvm::Function *> it = llvm::scc_begin(&F),
                                             it_end = llvm::scc_end(&F);
        it != it_end; ++it) {
@@ -106,6 +115,10 @@ SCCLoopPrinter::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
   }
   OS << "\t"
      << "]\n";
+  OS << "metadata\n";
+  for(const auto *mdnode : result.metadata) {
+    mdnode->print(OS);
+  }
 
   return llvm::PreservedAnalyses::all();
 }
