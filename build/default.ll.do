@@ -27,11 +27,22 @@ redo-ifchange llvm-dir ../compile_flags.txt "$SOURCE"
 LLVM_DIR="$(cat llvm-dir)"
 FLAGS="$(cat ../compile_flags.txt)"
 
+T="$(mktemp)"
+
 "$LLVM_DIR"/bin/clang \
     $FLAGS \
     -fno-discard-value-names \
     -emit-llvm \
-    -S -O1 \
+    -S \
     "$SOURCE" \
+    -o "$T"
+
+"$LLVM_DIR"/bin/opt \
+    -passes="annotation2metadata,annotation-remarks" \
+    -pass-remarks='.*' \
+    -pass-remarks-missed='.*' \
+    -pass-remarks-analysis='.*' \
+    -S \
+    "$T" \
     -o "$3"
 

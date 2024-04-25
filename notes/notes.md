@@ -204,7 +204,9 @@ And then color the DAG of SCCs
 BPF wanted to use annotate, stymied by not having documentation: https://groups.google.com/g/llvm-dev/c/CqpXrMUMiR8/m/3hAsOn-cBQAJ
 Pointed to https://blog.quarkslab.com/implementing-a-custom-directive-handler-in-clang.html
 
-...but that doesn't seem to map to the LLVM IR annotation concept.
+...but that doesn't seem to map to the LLVM IR annotation concept?
+
+Ah! unless you run https://llvm.org/doxygen/structllvm_1_1Annotation2MetadataPass.html perhaps?
 
 ## On inlining
 
@@ -228,6 +230,22 @@ This means two things:
     - [ ] AI: Can we do an LTO pass?
 
 
+## Monotone
+
+Our computation is monotone (https://www.cse.psu.edu/~gxt29/teaching/cse597s21/slides/08monotoneFramework.pdf)
+Worklist; on update, add successors to worklist/queue
+Until worklist is empty
+
+
+Provenance:
+-   When we generate _de novo_ a ruling - "I doubt this will complete" or "this will not complete"-
+    Capture that source, i.e. the instruction / block that gave us that determination.
+    What call was it? What loop condition was it?
+-   When we join, include an back-reference to the most-conservative version;
+    "This if/else may not complete... because the if branch has this for loop...
+    which is not canonical."
+
+This might be annotations? Or might be something else?
 
 ## Future: symbolic execution
 

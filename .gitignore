@@ -1,7 +1,7 @@
 # Build outputs and redo working files don't get checked in.
 
 build/*
--build/*.do
+!build/*.do
 *.svg
 loops/*.loops
 **.did
