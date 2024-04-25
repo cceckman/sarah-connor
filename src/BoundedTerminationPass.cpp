@@ -4,6 +4,7 @@
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/PassInstrumentation.h"
@@ -11,6 +12,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
 #include <vector>
@@ -40,7 +42,8 @@ enum DoesThisTerminate {
   // Or it may attempt to acquire a lock, which may never be released,
   // or may take arbitrarily long.
   //
-  // In the current implementation, we assume these things have unbounded latency:
+  // In the current implementation, we assume these things have unbounded
+  // latency:
   // - System calls
   // - Some loops (see "unknown")
   Unbounded,
@@ -50,12 +53,10 @@ enum DoesThisTerminate {
   // or because the analyzer does not have the reasoning to
   // bound the flow.
   //
-  //   TODO: Use annotations to say "assume yes/no" for a function/block/call/etc
+  //   TODO: Use annotations to say "assume yes/no" for a
+  //   function/block/call/etc
   Unknown,
 };
-
-
-
 
 std::string friendly_name_block(llvm::StringRef unfriendly) {
   llvm::StringRef tail = unfriendly;
@@ -75,11 +76,12 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
 }
 
 struct BoundedTerminationPassResult {
-  std::set<llvm::MDNode*> metadata;
-  std::set<std::string> blocks_with_loops;
+  DoesThisTerminate elt;
+  std::string explanation;
 };
 
-struct BoundedTerminationPass : public llvm::AnalysisInfoMixin<BoundedTerminationPass> {
+struct BoundedTerminationPass
+    : public llvm::AnalysisInfoMixin<BoundedTerminationPass> {
   using Result = BoundedTerminationPassResult;
   Result run(llvm::Function &F, llvm::FunctionAnalysisManager &);
   // Part of the official API:
@@ -96,7 +98,8 @@ private:
 //------------------------------------------------------------------------------
 // New PM interface for the printer pass
 //------------------------------------------------------------------------------
-class BoundedTerminationPrinter : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
+class BoundedTerminationPrinter
+    : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
 public:
   explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
   llvm::PreservedAnalyses run(llvm::Function &F,
@@ -109,16 +112,38 @@ private:
   llvm::raw_ostream &OS;
 };
 
+BoundedTerminationPassResult
+BasicBlockClassified(const llvm::BasicBlock &block) {
+  for (const auto &I : block) {
+    // Classify instructions based on whether we need to look at their metadata
+    // In particular: call, invoke, callbr (these might have unbounded behavior)
+    if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
+      std::string callee_name;
+
+      // TODO: Use the function attributes to improve this analysis
+      if (auto called_function = CI->getCalledFunction();
+          called_function != nullptr) {
+        callee_name = llvm::demangle(called_function->getName());
+      } else {
+        callee_name = "Indirect";
+      }
+      return BoundedTerminationPassResult{
+          .elt = DoesThisTerminate::Unknown,
+          .explanation = "Calls function with unknown properties."};
+    }
+  }
+
+  return BoundedTerminationPassResult{
+      .elt = DoesThisTerminate::Terminates,
+      .explanation = "Calls function with unknown properties."};
+}
+
 llvm::AnalysisKey BoundedTerminationPass::Key;
 
-BoundedTerminationPass::Result BoundedTerminationPass::run(llvm::Function &F,
-                                     llvm::FunctionAnalysisManager &) {
+BoundedTerminationPass::Result
+BoundedTerminationPass::run(llvm::Function &F,
+                            llvm::FunctionAnalysisManager &) {
   BoundedTerminationPass::Result result;
-  llvm::SmallVector<std::pair<unsigned int, llvm::MDNode*>> md;
-  F.getAllMetadata(md);
-  for(const auto md : md) {
-    result.metadata.emplace(md.second);
-  }
 
   for (llvm::scc_iterator<llvm::Function *> it = llvm::scc_begin(&F),
                                             it_end = llvm::scc_end(&F);
@@ -131,7 +156,7 @@ BoundedTerminationPass::Result BoundedTerminationPass::run(llvm::Function &F,
         for (const llvm::BasicBlock *pred : llvm::predecessors(block)) {
           // Check whether pred is not in our basic blocks set
           if (!basic_blocks.contains(pred)) {
-            result.blocks_with_loops.insert(std::string(block->getName()));
+            
           }
         }
       }
@@ -142,8 +167,10 @@ BoundedTerminationPass::Result BoundedTerminationPass::run(llvm::Function &F,
 }
 
 llvm::PreservedAnalyses
-BoundedTerminationPrinter::run(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
-  BoundedTerminationPass::Result &result = FAM.getResult<BoundedTerminationPass>(F);
+BoundedTerminationPrinter::run(llvm::Function &F,
+                               llvm::FunctionAnalysisManager &FAM) {
+  BoundedTerminationPass::Result &result =
+      FAM.getResult<BoundedTerminationPass>(F);
   auto demangled_fn = demangle(F.getName());
   OS << demangled_fn << " blocks with loops:\n";
   OS << "\t"
@@ -154,9 +181,6 @@ BoundedTerminationPrinter::run(llvm::Function &F, llvm::FunctionAnalysisManager 
   OS << "\t"
      << "]\n";
   OS << "metadata\n";
-  for(const auto *mdnode : result.metadata) {
-    mdnode->print(OS);
-  }
 
   return llvm::PreservedAnalyses::all();
 }
