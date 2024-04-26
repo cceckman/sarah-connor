@@ -14,6 +14,7 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -81,6 +82,15 @@ struct BoundedTerminationPassResult {
   std::string explanation;
 };
 
+bool operator<(const BoundedTerminationPassResult &a,
+               const BoundedTerminationPassResult &b) {
+  if (a.elt == b.elt) {
+    return a.explanation < b.explanation;
+  } else {
+    return a.elt < b.elt;
+  }
+}
+
 struct BoundedTerminationPass
     : public llvm::AnalysisInfoMixin<BoundedTerminationPass> {
   using Result = BoundedTerminationPassResult;
@@ -130,28 +140,63 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
       }
       return BoundedTerminationPassResult{
           .elt = DoesThisTerminate::Unknown,
-          .explanation = "Calls function with unknown properties."};
+          .explanation = "Calls function with unknown properties: " + callee_name};
     }
   }
 
   return BoundedTerminationPassResult{
       .elt = DoesThisTerminate::Terminates,
-      .explanation = "Calls function with unknown properties."};
+      .explanation = ""};
 }
 
-BoundedTerminationPassResult join(BoundedTerminationPassResult res1, BoundedTerminationPassResult res2) {
+BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
+                                  BoundedTerminationPassResult res2) {
   // TODO
-  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+  BoundedTerminationPassResult minResult = std::min(res1, res2);
+  BoundedTerminationPassResult maxResult = std::max(res1, res2);
+
+  if (minResult.elt == DoesThisTerminate::Unevaluated) {
+    return maxResult;
+  }
+
+  if (minResult.elt == DoesThisTerminate::Terminates) {
+    if (maxResult.elt == DoesThisTerminate::Unbounded) {
+      return BoundedTerminationPassResult{
+          .elt = DoesThisTerminate::Unknown,
+          .explanation =
+              "Joined with Unbounded branch: " + maxResult.explanation,
+      };
+    }
+
+    return maxResult;
+  }
+
+  if (minResult.elt == DoesThisTerminate::Unbounded) {
+    if (maxResult.elt == DoesThisTerminate::Unbounded) {
+      return BoundedTerminationPassResult{
+          .elt = DoesThisTerminate::Unbounded,
+          .explanation = "Joined two Unbounded branches: (" +
+                         minResult.explanation + "), (" +
+                         maxResult.explanation + ")",
+      };
+    }
+  }
+
+  return maxResult;
 }
 
-BoundedTerminationPassResult update(BoundedTerminationPassResult result, std::vector<BoundedTerminationPassResult> pred_results) {
+BoundedTerminationPassResult
+update(BoundedTerminationPassResult result,
+       std::vector<BoundedTerminationPassResult> pred_results) {
   // TODO
-  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Unknown,
+                                      .explanation = ""};
 }
 
 BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop) {
   // TODO
-  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Unknown,
+                                      .explanation = ""};
 }
 
 bool isExitingBlock(const llvm::BasicBlock &) {
@@ -164,24 +209,23 @@ llvm::AnalysisKey BoundedTerminationPass::Key;
 BoundedTerminationPass::Result
 BoundedTerminationPass::run(llvm::Function &F,
                             llvm::FunctionAnalysisManager &) {
-  std::map<llvm::BasicBlock*, BoundedTerminationPassResult> blocks_to_results;
+  std::map<llvm::BasicBlock *, BoundedTerminationPassResult> blocks_to_results;
 
   // Step 1 : do local basic block analysis
-  for (auto& basic_block : F) {
+  for (auto &basic_block : F) {
     BoundedTerminationPassResult result = basicBlockClassifier(basic_block);
     blocks_to_results.insert_or_assign(&basic_block, result);
   }
 
   // Step 2 : do loop-level analysis
 
-
   // Step 3 : worklist algorithm
 
-
   // Step 4 : join results of exiting blocks
-  BoundedTerminationPassResult aggregate_result{.elt=DoesThisTerminate::Unevaluated, .explanation=""};
-  
-  for (auto const& [key, value] : blocks_to_results) {
+  BoundedTerminationPassResult aggregate_result{
+      .elt = DoesThisTerminate::Unevaluated, .explanation = ""};
+
+  for (auto const &[key, value] : blocks_to_results) {
     if (isExitingBlock(*key)) {
       aggregate_result = join(aggregate_result, value);
     }

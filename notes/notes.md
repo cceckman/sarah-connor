@@ -131,6 +131,31 @@ does terminate
 
 Combine two functions... eh, no, it's more complicated: result depends on whether call is conditional.
 
+Join over TerminationResults:
+
+- If equal, pick either
+
+- If not equal:
+    - If either is Unknown: then pick Unknown
+    - Else if either is Unevaluated, then pick the other
+    - Else pick Unknown
+
+Alternatively:
+
+Sort into min and max (check which one is the lesser element)
+
+- If the min argument is Unevaluated, then pass the other explanation forward
+
+- If the min argument is Terminates, then:
+    - If the second argument is Unbounded, then Unknown and explanation says joined with Unbounded branch
+    - Otherwise, pass the other one forward
+
+- If the min argument is Unbounded, then:
+    - If the second argument is Unbounded, then Unbounded and explanation says joined with another Unbounded branch
+    - Otherwise, pass the other one forward
+
+- Pass min forward
+
 ## Alternative/additional
 
 http://rgrig.blogspot.com/2009/10/dtfloatleftclearleft-summary-of-some.html

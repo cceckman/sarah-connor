@@ -20,5 +20,5 @@ FLAGS="$(cat ../compile_flags.txt)"
     -dynamiclib \
     "$SOURCE"
 
+rm -rf "$1".dSYM
 mv "$3".dSYM "$1".dSYM
-
