@@ -1,9 +1,7 @@
 
-#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/CFG.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
@@ -25,7 +23,7 @@
 
 // Key result for the bounded termination pass:
 // Does this X terminate / do we know?
-enum DoesThisTerminate {
+enum class DoesThisTerminate {
   // We haven't evaluated this X yet.
   // Bottom of the lattice.
   Unevaluated,
@@ -35,7 +33,7 @@ enum DoesThisTerminate {
   // - All memory operations (load/store) complete;
   //   though this may not be true in all systems (embedded),
   //   we consider using such transactions in an unbounded context undefined.
-  Terminates,
+  Bounded,
 
   // The analyzer believes this will not terminate in bounded time:
   // It diverges, or may extend indefinitely.
@@ -60,6 +58,22 @@ enum DoesThisTerminate {
   Unknown,
 };
 
+llvm::StringRef to_string(DoesThisTerminate t) {
+  switch (t) {
+    case DoesThisTerminate::Unevaluated: return "Unevaluated";
+    case DoesThisTerminate::Bounded: return "Bounded";
+    case DoesThisTerminate::Unbounded: return "Unbounded";
+    case DoesThisTerminate::Unknown: return "Unknown";
+  }
+}
+
+llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const DoesThisTerminate& dt)
+{
+    os << to_string(dt);
+    return os;
+}
+
+
 std::string friendly_name_block(llvm::StringRef unfriendly) {
   llvm::StringRef tail = unfriendly;
   llvm::StringRef head;
@@ -78,8 +92,8 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
 }
 
 struct BoundedTerminationPassResult {
-  DoesThisTerminate elt;
-  std::string explanation;
+  DoesThisTerminate elt = DoesThisTerminate::Unevaluated;
+  std::string explanation = "";
 };
 
 bool operator<(const BoundedTerminationPassResult &a,
@@ -145,13 +159,12 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
   }
 
   return BoundedTerminationPassResult{
-      .elt = DoesThisTerminate::Terminates,
+      .elt = DoesThisTerminate::Bounded,
       .explanation = ""};
 }
 
 BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
                                   BoundedTerminationPassResult res2) {
-  // TODO
   BoundedTerminationPassResult minResult = std::min(res1, res2);
   BoundedTerminationPassResult maxResult = std::max(res1, res2);
 
@@ -159,7 +172,7 @@ BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
     return maxResult;
   }
 
-  if (minResult.elt == DoesThisTerminate::Terminates) {
+  if (minResult.elt == DoesThisTerminate::Bounded) {
     if (maxResult.elt == DoesThisTerminate::Unbounded) {
       return BoundedTerminationPassResult{
           .elt = DoesThisTerminate::Unknown,
@@ -188,9 +201,23 @@ BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
 BoundedTerminationPassResult
 update(BoundedTerminationPassResult result,
        std::vector<BoundedTerminationPassResult> pred_results) {
-  // TODO
-  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Unknown,
-                                      .explanation = ""};
+
+  BoundedTerminationPassResult predecessor_result;
+  for(const auto &predecessor : pred_results) {
+    predecessor_result = join(predecessor_result, predecessor);
+  }
+
+  // After joining all predecessors, we have one special exception to the 'join' rule.
+  //
+  // 'join' works for symmetric results, but we have an asymmetry here:
+  // if all predecessors are `Unbounded` and this is `Bounded`, then this node is `Unbounded` as well,
+  // TODO: This should be "just always unbounded", but adding an unknown-to-unbounded
+  // transition would prevent convergence. What to do?
+  if(result.elt == DoesThisTerminate::Bounded && predecessor_result.elt == DoesThisTerminate::Unbounded) {
+    return predecessor_result;
+  } else {
+    return join(result, predecessor_result);
+  }
 }
 
 BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop) {
