@@ -12,6 +12,7 @@ find . >&2 \
     -name '*.did' -or \
     -name '*.tmp' -or \
     -name '*.svg' -or \
+    -name '*.loops' -or \
     -name 'compile_flags.txt' \
     \) \
     -print \

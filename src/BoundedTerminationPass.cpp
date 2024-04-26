@@ -14,6 +14,7 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -113,7 +114,7 @@ private:
 };
 
 BoundedTerminationPassResult
-BasicBlockClassified(const llvm::BasicBlock &block) {
+basicBlockClassifier(const llvm::BasicBlock &block) {
   for (const auto &I : block) {
     // Classify instructions based on whether we need to look at their metadata
     // In particular: call, invoke, callbr (these might have unbounded behavior)
@@ -138,32 +139,55 @@ BasicBlockClassified(const llvm::BasicBlock &block) {
       .explanation = "Calls function with unknown properties."};
 }
 
+BoundedTerminationPassResult join(BoundedTerminationPassResult res1, BoundedTerminationPassResult res2) {
+  // TODO
+  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+}
+
+BoundedTerminationPassResult update(BoundedTerminationPassResult result, std::vector<BoundedTerminationPassResult> pred_results) {
+  // TODO
+  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+}
+
+BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop) {
+  // TODO
+  return BoundedTerminationPassResult{.elt=DoesThisTerminate::Unknown, .explanation=""};
+}
+
+bool isExitingBlock(const llvm::BasicBlock &) {
+  // TODO
+  return true;
+}
+
 llvm::AnalysisKey BoundedTerminationPass::Key;
 
 BoundedTerminationPass::Result
 BoundedTerminationPass::run(llvm::Function &F,
                             llvm::FunctionAnalysisManager &) {
-  BoundedTerminationPass::Result result;
+  std::map<llvm::BasicBlock*, BoundedTerminationPassResult> blocks_to_results;
 
-  for (llvm::scc_iterator<llvm::Function *> it = llvm::scc_begin(&F),
-                                            it_end = llvm::scc_end(&F);
-       it != it_end; ++it) {
-    if (it.hasCycle()) {
-      // Arbitrarily choosing size of 10 as our size for an SCC
-      llvm::SmallPtrSet<llvm::BasicBlock *, 10> basic_blocks(it->begin(),
-                                                             it->end());
-      for (auto block : basic_blocks) {
-        for (const llvm::BasicBlock *pred : llvm::predecessors(block)) {
-          // Check whether pred is not in our basic blocks set
-          if (!basic_blocks.contains(pred)) {
-            
-          }
-        }
-      }
+  // Step 1 : do local basic block analysis
+  for (auto& basic_block : F) {
+    BoundedTerminationPassResult result = basicBlockClassifier(basic_block);
+    blocks_to_results.insert_or_assign(&basic_block, result);
+  }
+
+  // Step 2 : do loop-level analysis
+
+
+  // Step 3 : worklist algorithm
+
+
+  // Step 4 : join results of exiting blocks
+  BoundedTerminationPassResult aggregate_result{.elt=DoesThisTerminate::Unevaluated, .explanation=""};
+  
+  for (auto const& [key, value] : blocks_to_results) {
+    if (isExitingBlock(*key)) {
+      aggregate_result = join(aggregate_result, value);
     }
   }
 
-  return result;
+  return aggregate_result;
 }
 
 llvm::PreservedAnalyses
@@ -171,16 +195,10 @@ BoundedTerminationPrinter::run(llvm::Function &F,
                                llvm::FunctionAnalysisManager &FAM) {
   BoundedTerminationPass::Result &result =
       FAM.getResult<BoundedTerminationPass>(F);
-  auto demangled_fn = demangle(F.getName());
-  OS << demangled_fn << " blocks with loops:\n";
-  OS << "\t"
-     << "[\n";
-  for (const auto &block_name : result.blocks_with_loops) {
-    OS << "\t" << friendly_name_block(block_name) << ",\n";
-  }
-  OS << "\t"
-     << "]\n";
-  OS << "metadata\n";
+
+  OS << "Function name: " << llvm::demangle(F.getName()) << "\n";
+  OS << "Result: " << result.elt << "\n";
+  OS << "Explanation: " << result.explanation << "\n";
 
   return llvm::PreservedAnalyses::all();
 }
