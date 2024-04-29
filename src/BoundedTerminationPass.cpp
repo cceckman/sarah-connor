@@ -100,7 +100,7 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
 
 struct BoundedTerminationPassResult {
   DoesThisTerminate elt = DoesThisTerminate::Unevaluated;
-  std::string explanation = "";
+  std::string explanation = "unevaluated";
 };
 
 bool operator<(const BoundedTerminationPassResult &a,
@@ -152,7 +152,8 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
     if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
       std::string callee_name;
 
-      // TODO: Use the function attributes to improve this analysis
+      // TODO: Use the function attributes, or function analysis,
+      // to improve this analysis
       if (auto called_function = CI->getCalledFunction();
           called_function != nullptr) {
         callee_name = llvm::demangle(called_function->getName());
@@ -167,7 +168,7 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
   }
 
   return BoundedTerminationPassResult{.elt = DoesThisTerminate::Bounded,
-                                      .explanation = ""};
+                                      .explanation = "no calls"};
 }
 
 BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
@@ -281,7 +282,7 @@ BoundedTerminationPass::run(llvm::Function &F,
     }
     auto result = loopClassifier(*loop, SE);
     auto updated = join(blocks_to_results.at(&basic_block), result);
-    blocks_to_results.emplace(&basic_block, updated);
+    blocks_to_results.insert_or_assign(&basic_block, updated);
   }
 
   // Step 3 : worklist algorithm.
@@ -293,7 +294,7 @@ BoundedTerminationPass::run(llvm::Function &F,
       results.emplace_back(blocks_to_results.at(predecessor));
     }
     auto altered = update(original, std::move(results));
-    blocks_to_results.emplace(block, original);
+    blocks_to_results.insert_or_assign(block, original);
     if(altered.elt != original.elt) {
       for(auto *successor : llvm::successors(block)) {
         outstanding_nodes.insert(successor);
