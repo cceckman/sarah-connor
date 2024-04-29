@@ -272,6 +272,32 @@ Provenance:
 
 This might be annotations? Or might be something else?
 
+
+## Loop handling
+
+We want to call loop.getBounds - but that requires a ScalarEvolution object. What's that?
+
+https://www.npopov.com/2023/10/03/LLVM-Scalar-evolution.html
+https://llvm.org/devmtg/2018-04/slides/Absar-ScalarEvolution.pdf
+
+"symbolic technique" - OK, this is doing the KLEE thing for us!
+
+https://llvm.org/doxygen/ScalarEvolution_8cpp_source.html
+
+TODO: This shows how to have CLI options- `static cl:opt<bool>`, something we could use for targeting?
+
+Scalar evolution pass is a _function_ pass, which returns a ScalarEvolution...
+and that's what we need. So we have to run the pass to get the result.
+
+ScalarEvolution is a legacy pass, though. Can we "just" get results from the old pass manager??
+
+
+
+Also of interest, Loop strength reduction: https://www.cs.cornell.edu/courses/cs6120/2019fa/blog/strength-reduction-pass-in-llvm/
+
+
+
+
 ## Future: symbolic execution
 
 At some point, break out KLEE...

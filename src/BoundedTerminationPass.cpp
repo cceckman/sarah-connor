@@ -1,5 +1,8 @@
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/LoopAnalysisManager.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instruction.h"
@@ -60,19 +63,22 @@ enum class DoesThisTerminate {
 
 llvm::StringRef to_string(DoesThisTerminate t) {
   switch (t) {
-    case DoesThisTerminate::Unevaluated: return "Unevaluated";
-    case DoesThisTerminate::Bounded: return "Bounded";
-    case DoesThisTerminate::Unbounded: return "Unbounded";
-    case DoesThisTerminate::Unknown: return "Unknown";
+  case DoesThisTerminate::Unevaluated:
+    return "Unevaluated";
+  case DoesThisTerminate::Bounded:
+    return "Bounded";
+  case DoesThisTerminate::Unbounded:
+    return "Unbounded";
+  case DoesThisTerminate::Unknown:
+    return "Unknown";
   }
 }
 
-llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const DoesThisTerminate& dt)
-{
-    os << to_string(dt);
-    return os;
+llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                              const DoesThisTerminate &dt) {
+  os << to_string(dt);
+  return os;
 }
-
 
 std::string friendly_name_block(llvm::StringRef unfriendly) {
   llvm::StringRef tail = unfriendly;
@@ -117,7 +123,7 @@ private:
   // A special type used by analysis passes to provide an address that
   // identifies that particular analysis pass type.
   static llvm::AnalysisKey Key;
-  friend struct llvm::AnalysisInfoMixin<BoundedTerminationPass>;
+  friend llvm::AnalysisInfoMixin<BoundedTerminationPass>;
 };
 
 //------------------------------------------------------------------------------
@@ -154,13 +160,13 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
       }
       return BoundedTerminationPassResult{
           .elt = DoesThisTerminate::Unknown,
-          .explanation = "Calls function with unknown properties: " + callee_name};
+          .explanation =
+              "Calls function with unknown properties: " + callee_name};
     }
   }
 
-  return BoundedTerminationPassResult{
-      .elt = DoesThisTerminate::Bounded,
-      .explanation = ""};
+  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Bounded,
+                                      .explanation = ""};
 }
 
 BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
@@ -203,34 +209,44 @@ update(BoundedTerminationPassResult result,
        std::vector<BoundedTerminationPassResult> pred_results) {
 
   BoundedTerminationPassResult predecessor_result;
-  for(const auto &predecessor : pred_results) {
+  for (const auto &predecessor : pred_results) {
     predecessor_result = join(predecessor_result, predecessor);
   }
 
-  // After joining all predecessors, we have one special exception to the 'join' rule.
+  // After joining all predecessors, we have one special exception to the 'join'
+  // rule.
   //
   // 'join' works for symmetric results, but we have an asymmetry here:
-  // if all predecessors are `Unbounded` and this is `Bounded`, then this node is `Unbounded` as well,
-  // TODO: This should be "just always unbounded", but adding an unknown-to-unbounded
-  // transition would prevent convergence. What to do?
-  if(result.elt == DoesThisTerminate::Bounded && predecessor_result.elt == DoesThisTerminate::Unbounded) {
+  // if all predecessors are `Unbounded` and this is `Bounded`, then this node
+  // is `Unbounded` as well,
+  // TODO: This should be "just always unbounded", but adding an
+  // unknown-to-unbounded transition would prevent convergence. What to do?
+  if (result.elt == DoesThisTerminate::Bounded &&
+      predecessor_result.elt == DoesThisTerminate::Unbounded) {
     return predecessor_result;
   } else {
     return join(result, predecessor_result);
   }
 }
 
-BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop) {
-  // TODO
-  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Unknown,
-                                      .explanation = ""};
+BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop,
+                                            llvm::ScalarEvolution &SE) {
+  std::optional<llvm::Loop::LoopBounds> bounds = loop.getBounds(SE);
+  if (!bounds.has_value()) {
+    return BoundedTerminationPassResult{
+        .elt = DoesThisTerminate::Unknown,
+        .explanation = "includes loop with indeterminate bounds"};
+  }
+  return BoundedTerminationPassResult{
+      .elt = DoesThisTerminate::Bounded,
+      .explanation = "includes a loop, but it has a fixed bound"};
 }
 
 bool isExitingBlock(const llvm::BasicBlock &B) {
   // Check whether the terminating instruction of the block is a "return"-type.
   // https://llvm.org/docs/LangRef.html#terminator-instructions
   const auto *terminator = B.getTerminator();
-  if(terminator == nullptr) {
+  if (terminator == nullptr) {
     // TODO: Can we print / capture an error here, or something?
     return true;
   }
@@ -241,7 +257,7 @@ llvm::AnalysisKey BoundedTerminationPass::Key;
 
 BoundedTerminationPass::Result
 BoundedTerminationPass::run(llvm::Function &F,
-                            llvm::FunctionAnalysisManager &) {
+                            llvm::FunctionAnalysisManager &FAM) {
   std::map<llvm::BasicBlock *, BoundedTerminationPassResult> blocks_to_results;
 
   // Step 1 : do local basic block analysis
@@ -250,7 +266,19 @@ BoundedTerminationPass::run(llvm::Function &F,
     blocks_to_results.insert_or_assign(&basic_block, result);
   }
 
-  // Step 2 : do loop-level analysis
+  // Step 2 : do loop-level analysis. We need a ScalarEvolution to get the
+  // loops.
+  llvm::ScalarEvolution &SE = FAM.getResult<llvm::ScalarEvolutionAnalysis>(F);
+  llvm::LoopInfo &loop_info = FAM.getResult<llvm::LoopAnalysis>(F);
+  for (auto &basic_block : F) {
+    llvm::Loop *loop = loop_info.getLoopFor(&basic_block);
+    if (loop == nullptr) {
+      continue;
+    }
+    auto result = loopClassifier(*loop, SE);
+    auto updated = join(blocks_to_results.at(&basic_block), result);
+    blocks_to_results.emplace(&basic_block, updated);
+  }
 
   // Step 3 : worklist algorithm
 
