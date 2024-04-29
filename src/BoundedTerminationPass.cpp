@@ -226,9 +226,15 @@ BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop) {
                                       .explanation = ""};
 }
 
-bool isExitingBlock(const llvm::BasicBlock &) {
-  // TODO
-  return true;
+bool isExitingBlock(const llvm::BasicBlock &B) {
+  // Check whether the terminating instruction of the block is a "return"-type.
+  // https://llvm.org/docs/LangRef.html#terminator-instructions
+  const auto *terminator = B.getTerminator();
+  if(terminator == nullptr) {
+    // TODO: Can we print / capture an error here, or something?
+    return true;
+  }
+  return terminator->willReturn();
 }
 
 llvm::AnalysisKey BoundedTerminationPass::Key;
@@ -269,7 +275,7 @@ BoundedTerminationPrinter::run(llvm::Function &F,
 
   OS << "Function name: " << llvm::demangle(F.getName()) << "\n";
   OS << "Result: " << result.elt << "\n";
-  OS << "Explanation: " << result.explanation << "\n";
+  OS << "Explanation: " << result.explanation << "\n\n";
 
   return llvm::PreservedAnalyses::all();
 }
