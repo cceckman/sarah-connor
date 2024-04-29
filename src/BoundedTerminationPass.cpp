@@ -5,6 +5,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
@@ -259,11 +260,14 @@ BoundedTerminationPass::Result
 BoundedTerminationPass::run(llvm::Function &F,
                             llvm::FunctionAnalysisManager &FAM) {
   std::map<llvm::BasicBlock *, BoundedTerminationPassResult> blocks_to_results;
+  // SetVector preserves insertion order - which is nice because it makes this deterministic.
+  llvm::SetVector<llvm::BasicBlock*> outstanding_nodes;
 
   // Step 1 : do local basic block analysis
   for (auto &basic_block : F) {
     BoundedTerminationPassResult result = basicBlockClassifier(basic_block);
     blocks_to_results.insert_or_assign(&basic_block, result);
+    outstanding_nodes.insert(&basic_block);
   }
 
   // Step 2 : do loop-level analysis. We need a ScalarEvolution to get the
@@ -280,7 +284,22 @@ BoundedTerminationPass::run(llvm::Function &F,
     blocks_to_results.emplace(&basic_block, updated);
   }
 
-  // Step 3 : worklist algorithm
+  // Step 3 : worklist algorithm.
+  while (!outstanding_nodes.empty()) {
+    llvm::BasicBlock *block = outstanding_nodes.pop_back_val();
+    auto original = blocks_to_results.at(block);
+    std::vector<BoundedTerminationPassResult> results;
+    for(llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
+      results.emplace_back(blocks_to_results.at(predecessor));
+    }
+    auto altered = update(original, std::move(results));
+    blocks_to_results.emplace(block, original);
+    if(altered.elt != original.elt) {
+      for(auto *successor : llvm::successors(block)) {
+        outstanding_nodes.insert(successor);
+      }
+    }
+  }
 
   // Step 4 : join results of exiting blocks
   BoundedTerminationPassResult aggregate_result{
