@@ -33,16 +33,8 @@ T="$(mktemp)"
     $FLAGS \
     -fno-discard-value-names \
     -emit-llvm \
+    -O1 \
     -S \
     "$SOURCE" \
-    -o "$T"
-
-"$LLVM_DIR"/bin/opt \
-    -passes="annotation2metadata,annotation-remarks" \
-    -pass-remarks='.*' \
-    -pass-remarks-missed='.*' \
-    -pass-remarks-analysis='.*' \
-    -S \
-    "$T" \
     -o "$3"
 
