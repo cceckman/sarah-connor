@@ -294,7 +294,7 @@ BoundedTerminationPass::run(llvm::Function &F,
       results.emplace_back(blocks_to_results.at(predecessor));
     }
     auto altered = update(original, std::move(results));
-    blocks_to_results.insert_or_assign(block, original);
+    blocks_to_results.insert_or_assign(block, altered);
     if(altered.elt != original.elt) {
       for(auto *successor : llvm::successors(block)) {
         outstanding_nodes.insert(successor);
