@@ -222,7 +222,6 @@ basicBlockClassifier(const llvm::BasicBlock &block,
       if (auto *called_function = CI->getCalledFunction();
           called_function != nullptr) {
 
-        // TODO: This isn't sufficient, we need to check all calls
         // TODO: How does this handle mutual recursion? Does LLVM notice or does
         // it just blow the stack?
         BoundedTerminationPassResult callee_result =
@@ -238,7 +237,10 @@ basicBlockClassifier(const llvm::BasicBlock &block,
     }
   }
 
-  if (result.elt == DoesThisTerminate::Unevaluated) result.elt = DoesThisTerminate::Bounded;
+  if (result.elt == DoesThisTerminate::Unevaluated) {
+    result.elt = DoesThisTerminate::Bounded;
+    result.explanation = "no calls";
+  }
 
   return result;
 }
