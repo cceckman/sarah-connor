@@ -205,8 +205,11 @@ update(BoundedTerminationPassResult result,
 }
 
 BoundedTerminationPassResult
-basicBlockClassifier(const llvm::BasicBlock &block, llvm::FunctionAnalysisManager &FAM) {
-  BoundedTerminationPassResult result { .elt = DoesThisTerminate::Unevaluated, };
+basicBlockClassifier(const llvm::BasicBlock &block,
+                     llvm::FunctionAnalysisManager &FAM) {
+  BoundedTerminationPassResult result{
+      .elt = DoesThisTerminate::Unevaluated,
+  };
 
   for (const auto &I : block) {
     // Classify instructions based on whether we need to look at their metadata
@@ -220,20 +223,24 @@ basicBlockClassifier(const llvm::BasicBlock &block, llvm::FunctionAnalysisManage
           called_function != nullptr) {
 
         // TODO: This isn't sufficient, we need to check all calls
-        // TODO: How does this handle mutual recursion? Does LLVM notice or does it just blow the stack?
-        BoundedTerminationPassResult callee_result = FAM.getResult<BoundedTerminationPass>(*called_function);
+        // TODO: How does this handle mutual recursion? Does LLVM notice or does
+        // it just blow the stack?
+        BoundedTerminationPassResult callee_result =
+            FAM.getResult<BoundedTerminationPass>(*called_function);
         result = join(result, callee_result);
-        result.explanation = "calls function " + llvm::demangle(called_function->getName()) + " with properties: (" + callee_result.explanation + ")";
+        result.explanation =
+            "calls function " + llvm::demangle(called_function->getName()) +
+            " with properties: (" + callee_result.explanation + ")";
       } else {
         result.elt = DoesThisTerminate::Unknown;
         result.explanation = "performs an indirect call";
       }
-      return result;
     }
   }
 
-  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Bounded,
-                                      .explanation = "no calls"};
+  if (result.elt == DoesThisTerminate::Unevaluated) result.elt = DoesThisTerminate::Bounded;
+
+  return result;
 }
 
 std::string maybe(bool is) { return is ? "is" : "is not"; }
@@ -246,7 +253,8 @@ BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop,
                         " in rotated form and " + maybe(bounds.has_value()) +
                         " bounded";
 
-  DoesThisTerminate elt = bounds.has_value() ? DoesThisTerminate::Bounded : DoesThisTerminate::Unknown;
+  DoesThisTerminate elt = bounds.has_value() ? DoesThisTerminate::Bounded
+                                             : DoesThisTerminate::Unknown;
 
   return BoundedTerminationPassResult{
       .elt = elt,
@@ -277,7 +285,8 @@ BoundedTerminationPass::run(llvm::Function &F,
 
   // Step 1 : do local basic block analysis
   for (auto &basic_block : F) {
-    BoundedTerminationPassResult result = basicBlockClassifier(basic_block, FAM);
+    BoundedTerminationPassResult result =
+        basicBlockClassifier(basic_block, FAM);
     blocks_to_results.insert_or_assign(&basic_block, result);
     outstanding_nodes.insert(&basic_block);
   }
