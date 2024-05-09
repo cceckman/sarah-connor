@@ -316,6 +316,15 @@ Also of interest, Loop strength reduction: https://www.cs.cornell.edu/courses/cs
       - Can we annotate calls, or headers, with "assume this"?
       - ...and check intraprocedurally, assume extraprocedurally?
 
+## Handling mutual recursion
+
+Write a CallGraphSCC pass:
+
+- If we have a cycle (mutual recursion), then all the functions are Unknown
+- If we have a single node without a self-edge, then we can call the function analysis pass
+
+The CallGraphSCC pass doesn't have to label anything, but when we analyze each function, 
+we can get the cached result from its parent CGSCC.
 
 ## Future: symbolic execution
 
