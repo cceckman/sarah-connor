@@ -7,4 +7,5 @@ loops/*.loops
 **.did
 **.dylib
 **.ll
+**.tmp
 compile_flags.txt
