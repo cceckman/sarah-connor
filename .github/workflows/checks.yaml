@@ -1,0 +1,21 @@
+name: CI Checks
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Get LLVM environment
+      run: llvm-config --version --prefix
+    - name: Rebuild all loops files
+      run: ./do loops/all
+
