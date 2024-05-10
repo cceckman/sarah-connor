@@ -14,8 +14,13 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install LLVM
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 17
     - name: Get LLVM environment
-      run: llvm-config --version --prefix
+      run: llvm-config-17 --version --prefix
     - name: Rebuild all loops files
       run: ./do loops/all
 
