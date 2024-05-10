@@ -22,7 +22,7 @@
 #include <vector>
 
 //------------------------------------------------------------------------------
-// New PM interface
+// Type definitions
 //------------------------------------------------------------------------------
 
 // Key result for the bounded termination pass:
@@ -62,6 +62,57 @@ enum class DoesThisTerminate {
   Unknown,
 };
 
+// Complete result for a termination evaluation:
+// an enum result, plus an explanation of reasoning.
+struct TerminationPassResult {
+  DoesThisTerminate elt = DoesThisTerminate::Unevaluated;
+  std::string explanation = "unevaluated";
+};
+
+// Pass over functions: does this terminate:
+struct FunctionTerminationPass
+    : public llvm::AnalysisInfoMixin<FunctionTerminationPass> {
+  using Result = TerminationPassResult;
+  Result run(llvm::Function &F, llvm::FunctionAnalysisManager &);
+  // Part of the official API:
+  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
+  static bool isRequired() { return true; }
+
+private:
+  // A special type used by analysis passes to provide an address that
+  // identifies that particular analysis pass type.
+  static llvm::AnalysisKey Key;
+  friend llvm::AnalysisInfoMixin<FunctionTerminationPass>;
+};
+
+// Printer pass for the function termination checker
+class BoundedTerminationPrinter
+    : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
+public:
+  explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &FAM);
+  // Part of the official API:
+  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
+  static bool isRequired() { return true; }
+
+private:
+  llvm::raw_ostream &OS;
+};
+
+//------------------------------------------------------------------------------
+// Free functions
+//------------------------------------------------------------------------------
+
+bool operator<(const TerminationPassResult &a,
+               const TerminationPassResult &b) {
+  if (a.elt == b.elt) {
+    return a.explanation < b.explanation;
+  } else {
+    return a.elt < b.elt;
+  }
+}
+
 llvm::StringRef to_string(DoesThisTerminate t) {
   switch (t) {
   case DoesThisTerminate::Unevaluated:
@@ -98,53 +149,7 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
   return result;
 }
 
-struct BoundedTerminationPassResult {
-  DoesThisTerminate elt = DoesThisTerminate::Unevaluated;
-  std::string explanation = "unevaluated";
-};
-
-bool operator<(const BoundedTerminationPassResult &a,
-               const BoundedTerminationPassResult &b) {
-  if (a.elt == b.elt) {
-    return a.explanation < b.explanation;
-  } else {
-    return a.elt < b.elt;
-  }
-}
-
-struct BoundedTerminationPass
-    : public llvm::AnalysisInfoMixin<BoundedTerminationPass> {
-  using Result = BoundedTerminationPassResult;
-  Result run(llvm::Function &F, llvm::FunctionAnalysisManager &);
-  // Part of the official API:
-  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
-  static bool isRequired() { return true; }
-
-private:
-  // A special type used by analysis passes to provide an address that
-  // identifies that particular analysis pass type.
-  static llvm::AnalysisKey Key;
-  friend llvm::AnalysisInfoMixin<BoundedTerminationPass>;
-};
-
-//------------------------------------------------------------------------------
-// New PM interface for the printer pass
-//------------------------------------------------------------------------------
-class BoundedTerminationPrinter
-    : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
-public:
-  explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
-  llvm::PreservedAnalyses run(llvm::Function &F,
-                              llvm::FunctionAnalysisManager &FAM);
-  // Part of the official API:
-  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
-  static bool isRequired() { return true; }
-
-private:
-  llvm::raw_ostream &OS;
-};
-
-BoundedTerminationPassResult
+TerminationPassResult
 basicBlockClassifier(const llvm::BasicBlock &block) {
   for (const auto &I : block) {
     // Classify instructions based on whether we need to look at their metadata
@@ -160,21 +165,21 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
       } else {
         callee_name = "Indirect";
       }
-      return BoundedTerminationPassResult{
+      return TerminationPassResult{
           .elt = DoesThisTerminate::Unknown,
           .explanation =
               "Calls function with unknown properties: " + callee_name};
     }
   }
 
-  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Bounded,
+  return TerminationPassResult{.elt = DoesThisTerminate::Bounded,
                                       .explanation = "no calls"};
 }
 
-BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
-                                  BoundedTerminationPassResult res2) {
-  BoundedTerminationPassResult minResult = std::min(res1, res2);
-  BoundedTerminationPassResult maxResult = std::max(res1, res2);
+TerminationPassResult join(TerminationPassResult res1,
+                                  TerminationPassResult res2) {
+  TerminationPassResult minResult = std::min(res1, res2);
+  TerminationPassResult maxResult = std::max(res1, res2);
 
   if (minResult.elt == DoesThisTerminate::Unevaluated) {
     return maxResult;
@@ -182,7 +187,7 @@ BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
 
   if (minResult.elt == DoesThisTerminate::Bounded) {
     if (maxResult.elt == DoesThisTerminate::Unbounded) {
-      return BoundedTerminationPassResult{
+      return TerminationPassResult{
           .elt = DoesThisTerminate::Unknown,
           .explanation =
               "Joined with Unbounded branch: " + maxResult.explanation,
@@ -194,7 +199,7 @@ BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
 
   if (minResult.elt == DoesThisTerminate::Unbounded) {
     if (maxResult.elt == DoesThisTerminate::Unbounded) {
-      return BoundedTerminationPassResult{
+      return TerminationPassResult{
           .elt = DoesThisTerminate::Unbounded,
           .explanation = "Joined two Unbounded branches: (" +
                          minResult.explanation + "), (" +
@@ -206,11 +211,11 @@ BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
   return maxResult;
 }
 
-BoundedTerminationPassResult
-update(BoundedTerminationPassResult result,
-       std::vector<BoundedTerminationPassResult> pred_results) {
+TerminationPassResult
+update(TerminationPassResult result,
+       std::vector<TerminationPassResult> pred_results) {
 
-  BoundedTerminationPassResult predecessor_result;
+  TerminationPassResult predecessor_result;
   for (const auto &predecessor : pred_results) {
     predecessor_result = join(predecessor_result, predecessor);
   }
@@ -231,15 +236,15 @@ update(BoundedTerminationPassResult result,
   }
 }
 
-BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop,
+TerminationPassResult loopClassifier(const llvm::Loop &loop,
                                             llvm::ScalarEvolution &SE) {
   std::optional<llvm::Loop::LoopBounds> bounds = loop.getBounds(SE);
   if (!bounds.has_value()) {
-    return BoundedTerminationPassResult{
+    return TerminationPassResult{
         .elt = DoesThisTerminate::Unknown,
         .explanation = "includes loop with indeterminate bounds"};
   }
-  return BoundedTerminationPassResult{
+  return TerminationPassResult{
       .elt = DoesThisTerminate::Bounded,
       .explanation = "includes a loop, but it has a fixed bound"};
 }
@@ -255,18 +260,20 @@ bool isExitingBlock(const llvm::BasicBlock &B) {
   return terminator->willReturn();
 }
 
-llvm::AnalysisKey BoundedTerminationPass::Key;
+//------------------------------------------------------------------------------
+// Pass bodies
+//------------------------------------------------------------------------------
 
-BoundedTerminationPass::Result
-BoundedTerminationPass::run(llvm::Function &F,
+FunctionTerminationPass::Result
+FunctionTerminationPass::run(llvm::Function &F,
                             llvm::FunctionAnalysisManager &FAM) {
-  std::map<llvm::BasicBlock *, BoundedTerminationPassResult> blocks_to_results;
+  std::map<llvm::BasicBlock *, TerminationPassResult> blocks_to_results;
   // SetVector preserves insertion order - which is nice because it makes this deterministic.
   llvm::SetVector<llvm::BasicBlock*> outstanding_nodes;
 
   // Step 1 : do local basic block analysis
   for (auto &basic_block : F) {
-    BoundedTerminationPassResult result = basicBlockClassifier(basic_block);
+    TerminationPassResult result = basicBlockClassifier(basic_block);
     blocks_to_results.insert_or_assign(&basic_block, result);
     outstanding_nodes.insert(&basic_block);
   }
@@ -289,7 +296,7 @@ BoundedTerminationPass::run(llvm::Function &F,
   while (!outstanding_nodes.empty()) {
     llvm::BasicBlock *block = outstanding_nodes.pop_back_val();
     auto original = blocks_to_results.at(block);
-    std::vector<BoundedTerminationPassResult> results;
+    std::vector<TerminationPassResult> results;
     for(llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
       results.emplace_back(blocks_to_results.at(predecessor));
     }
@@ -303,7 +310,7 @@ BoundedTerminationPass::run(llvm::Function &F,
   }
 
   // Step 4 : join results of exiting blocks
-  BoundedTerminationPassResult aggregate_result{
+  TerminationPassResult aggregate_result{
       .elt = DoesThisTerminate::Unevaluated, .explanation = ""};
 
   for (auto const &[key, value] : blocks_to_results) {
@@ -318,8 +325,8 @@ BoundedTerminationPass::run(llvm::Function &F,
 llvm::PreservedAnalyses
 BoundedTerminationPrinter::run(llvm::Function &F,
                                llvm::FunctionAnalysisManager &FAM) {
-  BoundedTerminationPass::Result &result =
-      FAM.getResult<BoundedTerminationPass>(F);
+  FunctionTerminationPass::Result &result =
+      FAM.getResult<FunctionTerminationPass>(F);
 
   OS << "Function name: " << llvm::demangle(F.getName()) << "\n";
   OS << "Result: " << result.elt << "\n";
@@ -327,6 +334,12 @@ BoundedTerminationPrinter::run(llvm::Function &F,
 
   return llvm::PreservedAnalyses::all();
 }
+
+//------------------------------------------------------------------------------
+// Static / wiring
+//------------------------------------------------------------------------------
+
+llvm::AnalysisKey FunctionTerminationPass::Key;
 
 llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
   using namespace ::llvm;
@@ -345,10 +358,11 @@ llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
             // #2 REGISTRATION FOR "MAM.getResult<StaticCallCounter>(Module)"
             PB.registerAnalysisRegistrationCallback(
                 [](FunctionAnalysisManager &FAM) {
-                  FAM.registerPass([&] { return BoundedTerminationPass(); });
+                  FAM.registerPass([&] { return FunctionTerminationPass(); });
                 });
           }};
 };
+
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
