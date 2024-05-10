@@ -144,6 +144,33 @@ private:
   llvm::raw_ostream &OS;
 };
 
+BoundedTerminationPassResult
+basicBlockClassifier(const llvm::BasicBlock &block) {
+  for (const auto &I : block) {
+    // Classify instructions based on whether we need to look at their metadata
+    // In particular: call, invoke, callbr (these might have unbounded behavior)
+    if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
+      std::string callee_name;
+
+      // TODO: Use the function attributes, or function analysis,
+      // to improve this analysis
+      if (auto called_function = CI->getCalledFunction();
+          called_function != nullptr) {
+        callee_name = llvm::demangle(called_function->getName());
+      } else {
+        callee_name = "Indirect";
+      }
+      return BoundedTerminationPassResult{
+          .elt = DoesThisTerminate::Unknown,
+          .explanation =
+              "Calls function with unknown properties: " + callee_name};
+    }
+  }
+
+  return BoundedTerminationPassResult{.elt = DoesThisTerminate::Bounded,
+                                      .explanation = "no calls"};
+}
+
 BoundedTerminationPassResult join(BoundedTerminationPassResult res1,
                                   BoundedTerminationPassResult res2) {
   BoundedTerminationPassResult minResult = std::min(res1, res2);
@@ -204,64 +231,17 @@ update(BoundedTerminationPassResult result,
   }
 }
 
-BoundedTerminationPassResult
-basicBlockClassifier(const llvm::BasicBlock &block,
-                     llvm::FunctionAnalysisManager &FAM) {
-  BoundedTerminationPassResult result{
-      .elt = DoesThisTerminate::Unevaluated,
-  };
-
-  for (const auto &I : block) {
-    // Classify instructions based on whether we need to look at their metadata
-    // In particular: call, invoke, callbr (these might have unbounded behavior)
-    if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
-      std::string callee_name;
-
-      // TODO: Use the function attributes, or function analysis,
-      // to improve this analysis
-      if (auto *called_function = CI->getCalledFunction();
-          called_function != nullptr) {
-
-        // TODO: How does this handle mutual recursion? Does LLVM notice or does
-        // it just blow the stack?
-        BoundedTerminationPassResult callee_result =
-            FAM.getResult<BoundedTerminationPass>(*called_function);
-        result = join(result, callee_result);
-        result.explanation =
-            "calls function " + llvm::demangle(called_function->getName()) +
-            " with properties: (" + callee_result.explanation + ")";
-      } else {
-        result.elt = DoesThisTerminate::Unknown;
-        result.explanation = "performs an indirect call";
-      }
-    }
-  }
-
-  if (result.elt == DoesThisTerminate::Unevaluated) {
-    result.elt = DoesThisTerminate::Bounded;
-    result.explanation = "no calls";
-  }
-
-  return result;
-}
-
-std::string maybe(bool is) { return is ? "is" : "is not"; }
-
 BoundedTerminationPassResult loopClassifier(const llvm::Loop &loop,
                                             llvm::ScalarEvolution &SE) {
   std::optional<llvm::Loop::LoopBounds> bounds = loop.getBounds(SE);
-  std::string message = "includes loop that " + maybe(loop.isCanonical(SE)) +
-                        " canonical and " + maybe(loop.isRotatedForm()) +
-                        " in rotated form and " + maybe(bounds.has_value()) +
-                        " bounded";
-
-  DoesThisTerminate elt = bounds.has_value() ? DoesThisTerminate::Bounded
-                                             : DoesThisTerminate::Unknown;
-
+  if (!bounds.has_value()) {
+    return BoundedTerminationPassResult{
+        .elt = DoesThisTerminate::Unknown,
+        .explanation = "includes loop with indeterminate bounds"};
+  }
   return BoundedTerminationPassResult{
-      .elt = elt,
-      .explanation = message,
-  };
+      .elt = DoesThisTerminate::Bounded,
+      .explanation = "includes a loop, but it has a fixed bound"};
 }
 
 bool isExitingBlock(const llvm::BasicBlock &B) {
@@ -281,14 +261,12 @@ BoundedTerminationPass::Result
 BoundedTerminationPass::run(llvm::Function &F,
                             llvm::FunctionAnalysisManager &FAM) {
   std::map<llvm::BasicBlock *, BoundedTerminationPassResult> blocks_to_results;
-  // SetVector preserves insertion order - which is nice because it makes this
-  // deterministic.
-  llvm::SetVector<llvm::BasicBlock *> outstanding_nodes;
+  // SetVector preserves insertion order - which is nice because it makes this deterministic.
+  llvm::SetVector<llvm::BasicBlock*> outstanding_nodes;
 
   // Step 1 : do local basic block analysis
   for (auto &basic_block : F) {
-    BoundedTerminationPassResult result =
-        basicBlockClassifier(basic_block, FAM);
+    BoundedTerminationPassResult result = basicBlockClassifier(basic_block);
     blocks_to_results.insert_or_assign(&basic_block, result);
     outstanding_nodes.insert(&basic_block);
   }
@@ -312,13 +290,13 @@ BoundedTerminationPass::run(llvm::Function &F,
     llvm::BasicBlock *block = outstanding_nodes.pop_back_val();
     auto original = blocks_to_results.at(block);
     std::vector<BoundedTerminationPassResult> results;
-    for (llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
+    for(llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
       results.emplace_back(blocks_to_results.at(predecessor));
     }
     auto altered = update(original, std::move(results));
     blocks_to_results.insert_or_assign(block, altered);
-    if (altered.elt != original.elt) {
-      for (auto *successor : llvm::successors(block)) {
+    if(altered.elt != original.elt) {
+      for(auto *successor : llvm::successors(block)) {
         outstanding_nodes.insert(successor);
       }
     }

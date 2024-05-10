@@ -24,9 +24,6 @@ FLAGS="$(cat ../compile_flags.txt)"
 
 TEMP="$(mktemp)"
 
-# As with Fluxx, order matters:
-# there's an implied? ordering among module/function/etc passes...?
-# And default is a module pass?
 "$LLVM_DIR"/bin/opt -load-pass-plugin \
     "$PASS_TARGET" \
     -passes="print<bounded-termination>" \
