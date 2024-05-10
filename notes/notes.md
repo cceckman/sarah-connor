@@ -296,25 +296,6 @@ ScalarEvolution is a legacy pass, though. Can we "just" get results from the old
 Also of interest, Loop strength reduction: https://www.cs.cornell.edu/courses/cs6120/2019fa/blog/strength-reduction-pass-in-llvm/
 
 
-## Call handling
-
-- [1/2] Intramodule
-      - Does this require analyzing at the "module" scope,
-        and automatically marking anything where there's a CGSCC as "unknown"?
-        What happens if we try it with mutually recursive calls?
-        (Does LLVM blow up?)
-
-        1. Write as a module pass
-        2. Look at CGSCC; tag anything in a CGSCC as "unknown"
-        3. Analyze remaining functions
-
-        Currently: handling via just recursing to FAM.
-        Need GCSCC to avoid mutual recursion
-
-- [ ] LLVM intrinsics - some of these can / should be assumed to be safe
-- [ ] Intermodule:
-      - Can we annotate calls, or headers, with "assume this"?
-      - ...and check intraprocedurally, assume extraprocedurally?
 
 
 ## Future: symbolic execution
