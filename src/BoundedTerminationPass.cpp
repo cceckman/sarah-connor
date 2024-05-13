@@ -1,5 +1,7 @@
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -85,13 +87,32 @@ private:
   friend llvm::AnalysisInfoMixin<FunctionTerminationPass>;
 };
 
+struct CallGraphTerminationPass
+    : public llvm::AnalysisInfoMixin<CallGraphTerminationPass> {
+  using Result = TerminationPassResult;
+  Result run(llvm::LazyCallGraph::SCC &C, llvm::CGSCCAnalysisManager &AM,
+             llvm::LazyCallGraph &CG);
+
+  // Part of the official API:
+  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
+  static bool isRequired() { return true; }
+
+private:
+  // A special type used by analysis passes to provide an address that
+  // identifies that particular analysis pass type.
+  static llvm::AnalysisKey Key;
+  friend llvm::AnalysisInfoMixin<CallGraphTerminationPass>;
+};
+
 // Printer pass for the function termination checker
 class BoundedTerminationPrinter
     : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
 public:
   explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
-  llvm::PreservedAnalyses run(llvm::Function &F,
-                              llvm::FunctionAnalysisManager &FAM);
+  llvm::PreservedAnalyses run(llvm::LazyCallGraph::SCC &SCC,
+                              llvm::CGSCCAnalysisManager &AM,
+                              llvm::LazyCallGraph &CG,
+                              llvm::CGSCCUpdateResult &);
   // Part of the official API:
   //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
   static bool isRequired() { return true; }
@@ -104,8 +125,7 @@ private:
 // Free functions
 //------------------------------------------------------------------------------
 
-bool operator<(const TerminationPassResult &a,
-               const TerminationPassResult &b) {
+bool operator<(const TerminationPassResult &a, const TerminationPassResult &b) {
   if (a.elt == b.elt) {
     return a.explanation < b.explanation;
   } else {
@@ -149,8 +169,7 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
   return result;
 }
 
-TerminationPassResult
-basicBlockClassifier(const llvm::BasicBlock &block) {
+TerminationPassResult basicBlockClassifier(const llvm::BasicBlock &block) {
   for (const auto &I : block) {
     // Classify instructions based on whether we need to look at their metadata
     // In particular: call, invoke, callbr (these might have unbounded behavior)
@@ -173,11 +192,11 @@ basicBlockClassifier(const llvm::BasicBlock &block) {
   }
 
   return TerminationPassResult{.elt = DoesThisTerminate::Bounded,
-                                      .explanation = "no calls"};
+                               .explanation = "no calls"};
 }
 
 TerminationPassResult join(TerminationPassResult res1,
-                                  TerminationPassResult res2) {
+                           TerminationPassResult res2) {
   TerminationPassResult minResult = std::min(res1, res2);
   TerminationPassResult maxResult = std::max(res1, res2);
 
@@ -211,9 +230,8 @@ TerminationPassResult join(TerminationPassResult res1,
   return maxResult;
 }
 
-TerminationPassResult
-update(TerminationPassResult result,
-       std::vector<TerminationPassResult> pred_results) {
+TerminationPassResult update(TerminationPassResult result,
+                             std::vector<TerminationPassResult> pred_results) {
 
   TerminationPassResult predecessor_result;
   for (const auto &predecessor : pred_results) {
@@ -237,16 +255,16 @@ update(TerminationPassResult result,
 }
 
 TerminationPassResult loopClassifier(const llvm::Loop &loop,
-                                            llvm::ScalarEvolution &SE) {
+                                     llvm::ScalarEvolution &SE) {
   std::optional<llvm::Loop::LoopBounds> bounds = loop.getBounds(SE);
   if (!bounds.has_value()) {
-    return TerminationPassResult{
-        .elt = DoesThisTerminate::Unknown,
-        .explanation = "includes loop with indeterminate bounds"};
+    return TerminationPassResult{.elt = DoesThisTerminate::Unknown,
+                                 .explanation =
+                                     "includes loop with indeterminate bounds"};
   }
-  return TerminationPassResult{
-      .elt = DoesThisTerminate::Bounded,
-      .explanation = "includes a loop, but it has a fixed bound"};
+  return TerminationPassResult{.elt = DoesThisTerminate::Bounded,
+                               .explanation =
+                                   "includes a loop, but it has a fixed bound"};
 }
 
 bool isExitingBlock(const llvm::BasicBlock &B) {
@@ -263,13 +281,34 @@ bool isExitingBlock(const llvm::BasicBlock &B) {
 //------------------------------------------------------------------------------
 // Pass bodies
 //------------------------------------------------------------------------------
+TerminationPassResult
+CallGraphTerminationPass::run(llvm::LazyCallGraph::SCC &C,
+                              llvm::CGSCCAnalysisManager &AM,
+                              llvm::LazyCallGraph &CG) {
+  llvm::LazyCallGraph::Node &N = *C.begin();
+  if (C.size() > 1 || (N->lookup(N) != nullptr)) {
+    // Recursive SCC:
+    // either >1 node,
+    // or 1 node with a self-edge.
+    return TerminationPassResult{
+        .elt = DoesThisTerminate::Unknown,
+        .explanation = "part of a set of mutually recursive functions",
+    };
+  }
+  // Process the function.
+
+  auto &FAM =
+      AM.getResult<llvm::FunctionAnalysisManagerCGSCCProxy>(C, CG).getManager();
+  return FAM.getResult<FunctionTerminationPass>(N.getFunction());
+}
 
 FunctionTerminationPass::Result
 FunctionTerminationPass::run(llvm::Function &F,
-                            llvm::FunctionAnalysisManager &FAM) {
+                             llvm::FunctionAnalysisManager &FAM) {
   std::map<llvm::BasicBlock *, TerminationPassResult> blocks_to_results;
-  // SetVector preserves insertion order - which is nice because it makes this deterministic.
-  llvm::SetVector<llvm::BasicBlock*> outstanding_nodes;
+  // SetVector preserves insertion order - which is nice because it makes this
+  // deterministic.
+  llvm::SetVector<llvm::BasicBlock *> outstanding_nodes;
 
   // Step 1 : do local basic block analysis
   for (auto &basic_block : F) {
@@ -297,21 +336,21 @@ FunctionTerminationPass::run(llvm::Function &F,
     llvm::BasicBlock *block = outstanding_nodes.pop_back_val();
     auto original = blocks_to_results.at(block);
     std::vector<TerminationPassResult> results;
-    for(llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
+    for (llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
       results.emplace_back(blocks_to_results.at(predecessor));
     }
     auto altered = update(original, std::move(results));
     blocks_to_results.insert_or_assign(block, altered);
-    if(altered.elt != original.elt) {
-      for(auto *successor : llvm::successors(block)) {
+    if (altered.elt != original.elt) {
+      for (auto *successor : llvm::successors(block)) {
         outstanding_nodes.insert(successor);
       }
     }
   }
 
   // Step 4 : join results of exiting blocks
-  TerminationPassResult aggregate_result{
-      .elt = DoesThisTerminate::Unevaluated, .explanation = ""};
+  TerminationPassResult aggregate_result{.elt = DoesThisTerminate::Unevaluated,
+                                         .explanation = ""};
 
   for (auto const &[key, value] : blocks_to_results) {
     if (isExitingBlock(*key)) {
@@ -322,13 +361,15 @@ FunctionTerminationPass::run(llvm::Function &F,
   return aggregate_result;
 }
 
-llvm::PreservedAnalyses
-BoundedTerminationPrinter::run(llvm::Function &F,
-                               llvm::FunctionAnalysisManager &FAM) {
-  FunctionTerminationPass::Result &result =
-      FAM.getResult<FunctionTerminationPass>(F);
+llvm::PreservedAnalyses BoundedTerminationPrinter::run(
+    llvm::LazyCallGraph::SCC &SCC, llvm::CGSCCAnalysisManager &AM,
+    llvm::LazyCallGraph &CG, llvm::CGSCCUpdateResult &) {
+  TerminationPassResult &result =
+      AM.getResult<CallGraphTerminationPass>(SCC, CG);
 
-  OS << "Function name: " << llvm::demangle(F.getName()) << "\n";
+  // SCC names appear to be "names of the functions, comma-separated, in parens"
+  // which demangle doesn't know how to handle.
+  OS << "CGSCC name: " << llvm::demangle(SCC.getName()) << "\n";
   OS << "Result: " << result.elt << "\n";
   OS << "Explanation: " << result.explanation << "\n\n";
 
@@ -340,29 +381,31 @@ BoundedTerminationPrinter::run(llvm::Function &F,
 //------------------------------------------------------------------------------
 
 llvm::AnalysisKey FunctionTerminationPass::Key;
+llvm::AnalysisKey CallGraphTerminationPass::Key;
 
 llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
   using namespace ::llvm;
   return {LLVM_PLUGIN_API_VERSION, "bounded-termination", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
-            // #1 REGISTRATION FOR "opt -passes=print<static-cc>"
             PB.registerPipelineParsingCallback(
-                [&](StringRef Name, FunctionPassManager &FPM,
+                [&](StringRef Name, CGSCCPassManager &PM,
                     ArrayRef<PassBuilder::PipelineElement>) {
                   if (Name == "print<bounded-termination>") {
-                    FPM.addPass(BoundedTerminationPrinter(llvm::errs()));
+                    PM.addPass(BoundedTerminationPrinter(llvm::errs()));
                     return true;
                   }
                   return false;
                 });
-            // #2 REGISTRATION FOR "MAM.getResult<StaticCallCounter>(Module)"
+            PB.registerAnalysisRegistrationCallback(
+                [](CGSCCAnalysisManager &CAM) {
+                  CAM.registerPass([&] { return CallGraphTerminationPass(); });
+                });
             PB.registerAnalysisRegistrationCallback(
                 [](FunctionAnalysisManager &FAM) {
                   FAM.registerPass([&] { return FunctionTerminationPass(); });
                 });
           }};
 };
-
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
