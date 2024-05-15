@@ -408,6 +408,16 @@ llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
   using namespace ::llvm;
   return {LLVM_PLUGIN_API_VERSION, "bounded-termination", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
+            // TODO: This is some hacks
+            PB.registerPipelineParsingCallback(
+                [&](StringRef Name, ModulePassManager &PM,
+                    ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == "do_lazy_cg") {
+                    PM.addPass(llvm::LazyCallGraphPrinterPass(llvm::errs()));
+                    return true;
+                  }
+                  return false;
+                });
             PB.registerPipelineParsingCallback(
                 [&](StringRef Name, FunctionPassManager &PM,
                     ArrayRef<PassBuilder::PipelineElement>) {
@@ -417,6 +427,9 @@ llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
                   }
                   return false;
                 });
+            // TODO: Can we register a dependency in the new pass manager,
+            // that `bounded-termination` requires `LazyCallGraph` before
+            // entering the function layer?
             PB.registerAnalysisRegistrationCallback(
                 [](FunctionAnalysisManager &FAM) {
                   FAM.registerPass([&] { return FunctionTerminationPass(); });
