@@ -24,7 +24,7 @@ FLAGS="$(cat ../compile_flags.txt)"
 
 TEMP="$(mktemp)"
 
-timeout 30s \
+timeout 10s \
 "$LLVM_DIR"/bin/opt -load-pass-plugin \
     "$PASS_TARGET" \
     -passes="print<bounded-termination>" \

@@ -307,6 +307,15 @@ Write a CallGraphSCC pass:
 The CallGraphSCC pass doesn't have to label anything, but when we analyze each function, 
 we can get the cached result from its parent CGSCC.
 
+
+## Dependencies
+
+Results should implement [invalidate] to represent dependencies with other analyses.
+
+e.g.: our function pass depends on the loop pass
+
+[invalidate]: https://llvm.org/doxygen/classllvm_1_1AnalysisManager_1_1Invalidator.html
+
 ## Future: symbolic execution
 
 At some point, break out KLEE...
