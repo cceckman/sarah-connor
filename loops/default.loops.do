@@ -29,7 +29,7 @@ set -o pipefail
 timeout 10s \
 "$LLVM_DIR"/bin/opt -load-pass-plugin \
     "$PASS_TARGET" \
-    -passes="module(do_lazy_cg),function(print<bounded-termination>)" \
+    -passes="module(print<bounded-termination>)" \
     -disable-output \
     "$ANALYSIS_FILE" \
     2>&1 | tee "$3" >&2
