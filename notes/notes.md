@@ -307,6 +307,25 @@ Write a CallGraphSCC pass:
 The CallGraphSCC pass doesn't have to label anything, but when we analyze each function, 
 we can get the cached result from its parent CGSCC.
 
+...no, we can't. We can only get a result from an outer analysis if the pass is
+"cached and immutable", and the LazyCallGraph is not.
+
+We could do a module pass, or a CGSCC pass; if we are careful to invalidate the
+outer pass when the inner object is transformed. Maybe that's OK?
+
+Or:
+- Function-level analysis produces a "contingent" result; either:
+  - I have this result, regardless of anything
+  - I am Terminates _if_ all of these functions are Terminates
+
+  So the Function analysis is strictly local; can be handled by an inner proxy.
+  And it doesn't depend on the CGSCC analysis.
+
+- The outer result (e.g. Module) gets the Function-local results,
+  and the CG results,
+  and "completes" the analysis for each function.
+  Invalidation naturally falls out by referring to the inner analyses
+  (CG analysis and Function analysis).
 
 ## Dependencies
 
@@ -315,6 +334,9 @@ Results should implement [invalidate] to represent dependencies with other analy
 e.g.: our function pass depends on the loop pass
 
 [invalidate]: https://llvm.org/doxygen/classllvm_1_1AnalysisManager_1_1Invalidator.html
+
+
+
 
 ## Future: symbolic execution
 

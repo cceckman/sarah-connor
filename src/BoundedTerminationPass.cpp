@@ -67,10 +67,29 @@ enum class DoesThisTerminate {
 // Complete result for a termination evaluation:
 // an enum result, plus an explanation of reasoning.
 //
+// Function-level analysis results are contingent:
+// they assume that every function this function calls
+// is Bounded.
+//
 // TODO: This may be invalidated by loop transforms - implement `invalidate`
 struct TerminationPassResult {
   DoesThisTerminate elt = DoesThisTerminate::Unevaluated;
   std::string explanation = "unevaluated";
+};
+
+// Results from analyzing the full module,
+// including call-graph analysis.
+struct ModuleTerminationPassResult {
+  std::map<llvm::Function*, TerminationPassResult> per_function_results;
+
+  // Invalidated when:
+  // - FunctionTerminationPass is invalidated
+  // - LazyCallGraphPass analysis is invalidated
+  bool invalidate(llvm::Module &IR, const llvm::PreservedAnalyses &PA,
+                  llvm::ModuleAnalysisManager::Invalidator &) {
+    // TODO: This is the worst result we could give here!
+    return false;
+  }
 };
 
 // Pass over functions: does this terminate:
@@ -89,13 +108,28 @@ private:
   friend llvm::AnalysisInfoMixin<FunctionTerminationPass>;
 };
 
+struct ModuleTerminationPass
+    : public llvm::AnalysisInfoMixin<ModuleTerminationPass> {
+  using Result = ModuleTerminationPassResult;
+  Result run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM);
+  // Part of the official API:
+  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
+  static bool isRequired() { return true; }
+
+private:
+  // A special type used by analysis passes to provide an address that
+  // identifies that particular analysis pass type.
+  static llvm::AnalysisKey Key;
+  friend llvm::AnalysisInfoMixin<ModuleTerminationPass>;
+};
+
 // Printer pass for the function termination checker
 class BoundedTerminationPrinter
     : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
 public:
   explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
-  llvm::PreservedAnalyses run(llvm::Function &F,
-                              llvm::FunctionAnalysisManager &FAM);
+  llvm::PreservedAnalyses run(llvm::Module &IR,
+                              llvm::ModuleAnalysisManager &MAM);
   // Part of the official API:
   //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
   static bool isRequired() { return true; }
@@ -157,30 +191,21 @@ TerminationPassResult basicBlockClassifier(const llvm::BasicBlock &block) {
     // Classify instructions based on whether we need to look at their metadata
     // In particular: call, invoke, callbr (these might have unbounded behavior)
     if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
-      std::string callee_name;
-
-      // TODO: Use the function attributes, or function analysis,
-      // to improve this analysis
       if (auto called_function = CI->getCalledFunction();
-          called_function != nullptr) {
-        callee_name = llvm::demangle(called_function->getName());
-      } else {
-        callee_name = "Indirect";
+          called_function == nullptr) {
+        // Indirect function call; we don't know what the properties of the
+        // target are, and our CG analysis won't cover it.
+        // (CG covers CGSCC/recursion detection, as well as propagating
+        // unbounded backwards .)
+        return TerminationPassResult{.elt = DoesThisTerminate::Unknown,
+                                     .explanation =
+                                         "Performs an indirect function call"};
       }
-      // Our target may be:
-      // - Unknown (indirect), and therefore DoesThisTerminate::Unknown
-      // - Part of a recursive CGSCC
-      // - Known, but internally unbounded (e.g. contains an unbounded loop)
-      // - Bounded
-      return TerminationPassResult{
-          .elt = DoesThisTerminate::Unknown,
-          .explanation =
-              "Calls function with unknown properties: " + callee_name};
     }
   }
 
   return TerminationPassResult{.elt = DoesThisTerminate::Bounded,
-                               .explanation = "no calls"};
+                               .explanation = "no indirect calls"};
 }
 
 TerminationPassResult join(TerminationPassResult res1,
@@ -226,8 +251,8 @@ TerminationPassResult update(TerminationPassResult result,
     predecessor_result = join(predecessor_result, predecessor);
   }
 
-  // After joining all predecessors, we have one special exception to the 'join'
-  // rule.
+  // After joining all predecessors, we have one special exception to the
+  // 'join' rule.
   //
   // 'join' works for symmetric results, but we have an asymmetry here:
   // if all predecessors are `Unbounded` and this is `Bounded`, then this node
@@ -256,8 +281,8 @@ TerminationPassResult loopClassifier(const llvm::Loop &loop,
 }
 
 bool isExitingBlock(const llvm::BasicBlock &B) {
-  // Check whether the terminating instruction of the block is a "return"-type.
-  // https://llvm.org/docs/LangRef.html#terminator-instructions
+  // Check whether the terminating instruction of the block is a
+  // "return"-type. https://llvm.org/docs/LangRef.html#terminator-instructions
   const auto *terminator = B.getTerminator();
   if (terminator == nullptr) {
     // TODO: Can we print / capture an error here, or something?
@@ -269,6 +294,10 @@ bool isExitingBlock(const llvm::BasicBlock &B) {
 TerminationPassResult
 detect_cgscc_recursion(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
   auto &MAM = FAM.getResult<llvm::ModuleAnalysisManagerFunctionProxy>(F);
+  // Process invalidation based on the outer result;
+  // this makes sure we're invalidated if the LazyCallGraphAnalysis changes.
+  MAM.registerOuterAnalysisInvalidation<llvm::LazyCallGraphAnalysis,
+                                        FunctionTerminationPass>();
   const llvm::LazyCallGraph *CG =
       MAM.getCachedResult<llvm::LazyCallGraphAnalysis>(*F.getParent());
   if (CG == nullptr) {
@@ -320,15 +349,15 @@ detect_cgscc_recursion(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
 FunctionTerminationPass::Result
 FunctionTerminationPass::run(llvm::Function &F,
                              llvm::FunctionAnalysisManager &FAM) {
-  const auto &outer_result = detect_cgscc_recursion(F, FAM);
-
-  // If this function is part of a recursive call-graph group
-  // (a non-trivial CGSCC), then we don't do any more analysis.
-  // This way, we avoid recursing in getResult<Callee>
-  // for the callees of this function.
-  if (outer_result.elt >= DoesThisTerminate::Unbounded) {
-    return outer_result;
-  }
+  // const auto &outer_result = detect_cgscc_recursion(F, FAM);
+  //
+  // // If this function is part of a recursive call-graph group
+  // // (a non-trivial CGSCC), then we don't do any more analysis.
+  // // This way, we avoid recursing in getResult<Callee>
+  // // for the callees of this function.
+  // if (outer_result.elt >= DoesThisTerminate::Unbounded) {
+  //   return outer_result;
+  // }
 
   std::map<llvm::BasicBlock *, TerminationPassResult> blocks_to_results;
   // SetVector preserves insertion order - which is nice because it makes this
@@ -374,7 +403,10 @@ FunctionTerminationPass::run(llvm::Function &F,
   }
 
   // Step 4 : join results of exiting blocks
-  TerminationPassResult aggregate_result = outer_result;
+  TerminationPassResult aggregate_result = {
+    .elt = DoesThisTerminate::Bounded,
+    .explanation = ""
+  };
 
   for (auto const &[key, value] : blocks_to_results) {
     if (isExitingBlock(*key)) {
@@ -385,15 +417,40 @@ FunctionTerminationPass::run(llvm::Function &F,
   return aggregate_result;
 }
 
-llvm::PreservedAnalyses
-BoundedTerminationPrinter::run(llvm::Function &F,
-                               llvm::FunctionAnalysisManager &FAM) {
-  FunctionTerminationPass::Result &result =
-      FAM.getResult<FunctionTerminationPass>(F);
+ModuleTerminationPass::Result
+ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
+  std::map<llvm::Function *, TerminationPassResult> per_function_results;
 
-  OS << "Function name: " << llvm::demangle(F.getName()) << "\n";
-  OS << "Result: " << result.elt << "\n";
-  OS << "Explanation: " << result.explanation << "\n\n";
+  auto &function_analysis_manager_proxy =
+      AM.getResult<llvm::FunctionAnalysisManagerModuleProxy>(IR);
+  auto &FAM = function_analysis_manager_proxy.getManager();
+  // Step 1 : function-local analysis
+  for (llvm::Function &function: IR) {
+    per_function_results.insert({&function, FAM.getResult<FunctionTerminationPass>(function)});
+  }
+
+  // Step 2 : CGSCC analysis; note recursion up-front.
+  // TODO:
+  // auto &call_graph = AM.getResult<llvm::LazyCallGraphAnalysis>(IR);
+
+  // Step 3 : worklist algorithm on the call graph.
+  // TODO:
+
+
+  return ModuleTerminationPassResult{per_function_results};
+}
+
+llvm::PreservedAnalyses
+BoundedTerminationPrinter::run(llvm::Module &IR,
+                               llvm::ModuleAnalysisManager &AM) {
+  OS << "Starting pass... \n";
+  auto &module_results = AM.getResult<ModuleTerminationPass>(IR);
+  OS << "got results... \n";
+  // for (const auto &[function, result] : module_results.per_function_results) {
+  //   OS << "Function name: " << llvm::demangle(function->getName()) << "\n";
+  //   OS << "Result: " << result.elt << "\n";
+  //   OS << "Explanation: " << result.explanation << "\n\n";
+  // }
 
   return llvm::PreservedAnalyses::all();
 }
@@ -403,23 +460,14 @@ BoundedTerminationPrinter::run(llvm::Function &F,
 //------------------------------------------------------------------------------
 
 llvm::AnalysisKey FunctionTerminationPass::Key;
+llvm::AnalysisKey ModuleTerminationPass::Key;
 
 llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
   using namespace ::llvm;
   return {LLVM_PLUGIN_API_VERSION, "bounded-termination", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
-            // TODO: This is some hacks
             PB.registerPipelineParsingCallback(
                 [&](StringRef Name, ModulePassManager &PM,
-                    ArrayRef<PassBuilder::PipelineElement>) {
-                  if (Name == "do_lazy_cg") {
-                    PM.addPass(llvm::LazyCallGraphPrinterPass(llvm::errs()));
-                    return true;
-                  }
-                  return false;
-                });
-            PB.registerPipelineParsingCallback(
-                [&](StringRef Name, FunctionPassManager &PM,
                     ArrayRef<PassBuilder::PipelineElement>) {
                   if (Name == "print<bounded-termination>") {
                     PM.addPass(BoundedTerminationPrinter(llvm::errs()));
@@ -427,13 +475,15 @@ llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
                   }
                   return false;
                 });
-            // TODO: Can we register a dependency in the new pass manager,
-            // that `bounded-termination` requires `LazyCallGraph` before
-            // entering the function layer?
             PB.registerAnalysisRegistrationCallback(
-                [](FunctionAnalysisManager &FAM) {
-                  FAM.registerPass([&] { return FunctionTerminationPass(); });
+                [](FunctionAnalysisManager &AM) {
+                  AM.registerPass([&] { return FunctionTerminationPass(); });
                 });
+            PB.registerAnalysisRegistrationCallback(
+                [](ModuleAnalysisManager&AM) {
+                  AM.registerPass([&] { return ModuleTerminationPass(); });
+                });
+
           }};
 };
 
