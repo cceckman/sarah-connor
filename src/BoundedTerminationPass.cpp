@@ -80,7 +80,7 @@ struct TerminationPassResult {
 // Results from analyzing the full module,
 // including call-graph analysis.
 struct ModuleTerminationPassResult {
-  std::map<llvm::Function*, TerminationPassResult> per_function_results;
+  std::map<llvm::Function *, TerminationPassResult> per_function_results;
 
   // Invalidated when:
   // - FunctionTerminationPass is invalidated
@@ -123,13 +123,28 @@ private:
   friend llvm::AnalysisInfoMixin<ModuleTerminationPass>;
 };
 
-// Printer pass for the function termination checker
+// Printer pass for the module-level termination checker
 class BoundedTerminationPrinter
     : public llvm::PassInfoMixin<BoundedTerminationPrinter> {
 public:
   explicit BoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
   llvm::PreservedAnalyses run(llvm::Module &IR,
                               llvm::ModuleAnalysisManager &MAM);
+  // Part of the official API:
+  //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
+  static bool isRequired() { return true; }
+
+private:
+  llvm::raw_ostream &OS;
+};
+
+// Printer pass for the module-level termination checker
+class FunctionBoundedTerminationPrinter
+    : public llvm::PassInfoMixin<FunctionBoundedTerminationPrinter> {
+public:
+  explicit FunctionBoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
+  llvm::PreservedAnalyses run(llvm::Function &IR,
+                              llvm::FunctionAnalysisManager &FAM);
   // Part of the official API:
   //  https://llvm.org/docs/WritingAnLLVMNewPMPass.html#required-passes
   static bool isRequired() { return true; }
@@ -349,6 +364,8 @@ detect_cgscc_recursion(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
 FunctionTerminationPass::Result
 FunctionTerminationPass::run(llvm::Function &F,
                              llvm::FunctionAnalysisManager &FAM) {
+  llvm::ScalarEvolution &SE = FAM.getResult<llvm::ScalarEvolutionAnalysis>(F);
+  llvm::LoopInfo &loop_info = FAM.getResult<llvm::LoopAnalysis>(F);
   // const auto &outer_result = detect_cgscc_recursion(F, FAM);
   //
   // // If this function is part of a recursive call-graph group
@@ -373,8 +390,6 @@ FunctionTerminationPass::run(llvm::Function &F,
 
   // Step 2 : do loop-level analysis. We need a ScalarEvolution to get the
   // loops.
-  llvm::ScalarEvolution &SE = FAM.getResult<llvm::ScalarEvolutionAnalysis>(F);
-  llvm::LoopInfo &loop_info = FAM.getResult<llvm::LoopAnalysis>(F);
   for (auto &basic_block : F) {
     llvm::Loop *loop = loop_info.getLoopFor(&basic_block);
     if (loop == nullptr) {
@@ -403,10 +418,8 @@ FunctionTerminationPass::run(llvm::Function &F,
   }
 
   // Step 4 : join results of exiting blocks
-  TerminationPassResult aggregate_result = {
-    .elt = DoesThisTerminate::Bounded,
-    .explanation = ""
-  };
+  TerminationPassResult aggregate_result = {.elt = DoesThisTerminate::Bounded,
+                                            .explanation = ""};
 
   for (auto const &[key, value] : blocks_to_results) {
     if (isExitingBlock(*key)) {
@@ -425,17 +438,17 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
       AM.getResult<llvm::FunctionAnalysisManagerModuleProxy>(IR);
   auto &FAM = function_analysis_manager_proxy.getManager();
   // Step 1 : function-local analysis
-  for (llvm::Function &function: IR) {
-    per_function_results.insert({&function, FAM.getResult<FunctionTerminationPass>(function)});
+  for (llvm::Function &function : IR) {
+    per_function_results.insert(
+        {&function, FAM.getResult<FunctionTerminationPass>(function)});
   }
 
   // Step 2 : CGSCC analysis; note recursion up-front.
-  // TODO:
+  // TODO: This is taking literally forever. No, figuratively forever
   // auto &call_graph = AM.getResult<llvm::LazyCallGraphAnalysis>(IR);
 
   // Step 3 : worklist algorithm on the call graph.
   // TODO:
-
 
   return ModuleTerminationPassResult{per_function_results};
 }
@@ -446,11 +459,22 @@ BoundedTerminationPrinter::run(llvm::Module &IR,
   OS << "Starting pass... \n";
   auto &module_results = AM.getResult<ModuleTerminationPass>(IR);
   OS << "got results... \n";
-  // for (const auto &[function, result] : module_results.per_function_results) {
+  // for (const auto &[function, result] : module_results.per_function_results)
+  // {
   //   OS << "Function name: " << llvm::demangle(function->getName()) << "\n";
   //   OS << "Result: " << result.elt << "\n";
   //   OS << "Explanation: " << result.explanation << "\n\n";
   // }
+
+  return llvm::PreservedAnalyses::all();
+}
+
+llvm::PreservedAnalyses
+FunctionBoundedTerminationPrinter::run(llvm::Function &IR,
+                                       llvm::FunctionAnalysisManager &AM) {
+  auto &results = AM.getResult<FunctionTerminationPass>(IR);
+  OS << "For function: " << llvm::demangle(IR.getName())
+     << "got result: " << results.elt << "\n";
 
   return llvm::PreservedAnalyses::all();
 }
@@ -475,15 +499,23 @@ llvm::PassPluginLibraryInfo getBoundedTerminationPassPluginInfo() {
                   }
                   return false;
                 });
+            PB.registerPipelineParsingCallback(
+                [&](StringRef Name, FunctionPassManager &PM,
+                    ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == "print<function-bounded-termination>") {
+                    PM.addPass(FunctionBoundedTerminationPrinter(llvm::errs()));
+                    return true;
+                  }
+                  return false;
+                });
             PB.registerAnalysisRegistrationCallback(
                 [](FunctionAnalysisManager &AM) {
                   AM.registerPass([&] { return FunctionTerminationPass(); });
                 });
             PB.registerAnalysisRegistrationCallback(
-                [](ModuleAnalysisManager&AM) {
+                [](ModuleAnalysisManager &AM) {
                   AM.registerPass([&] { return ModuleTerminationPass(); });
                 });
-
           }};
 };
 

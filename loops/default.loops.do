@@ -29,7 +29,7 @@ set -o pipefail
 timeout 10s \
 "$LLVM_DIR"/bin/opt -load-pass-plugin \
     "$PASS_TARGET" \
-    -passes="module(print<bounded-termination>)" \
+    -passes="print<bounded-termination>" \
     -disable-output \
     "$ANALYSIS_FILE" \
     2>&1 | tee "$3" >&2
