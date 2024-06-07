@@ -364,6 +364,13 @@ detect_cgscc_recursion(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
 FunctionTerminationPass::Result
 FunctionTerminationPass::run(llvm::Function &F,
                              llvm::FunctionAnalysisManager &FAM) {
+  if(F.empty()) {
+    return FunctionTerminationPass::Result{
+      .elt = DoesThisTerminate::Unknown,
+      .explanation = "has no basic blocks in this module",
+    };
+  }
+
   llvm::ScalarEvolution &SE = FAM.getResult<llvm::ScalarEvolutionAnalysis>(F);
   llvm::LoopInfo &loop_info = FAM.getResult<llvm::LoopAnalysis>(F);
   // const auto &outer_result = detect_cgscc_recursion(F, FAM);
@@ -456,15 +463,13 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
 llvm::PreservedAnalyses
 BoundedTerminationPrinter::run(llvm::Module &IR,
                                llvm::ModuleAnalysisManager &AM) {
-  OS << "Starting pass... \n";
   auto &module_results = AM.getResult<ModuleTerminationPass>(IR);
-  OS << "got results... \n";
-  // for (const auto &[function, result] : module_results.per_function_results)
-  // {
-  //   OS << "Function name: " << llvm::demangle(function->getName()) << "\n";
-  //   OS << "Result: " << result.elt << "\n";
-  //   OS << "Explanation: " << result.explanation << "\n\n";
-  // }
+  for (const auto &[function, result] : module_results.per_function_results)
+  {
+    OS << "Function name: " << llvm::demangle(function->getName()) << "\n";
+    OS << "Result: " << result.elt << "\n";
+    OS << "Explanation: " << result.explanation << "\n\n";
+  }
 
   return llvm::PreservedAnalyses::all();
 }
