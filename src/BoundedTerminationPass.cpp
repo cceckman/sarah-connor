@@ -80,7 +80,7 @@ struct TerminationPassResult {
 // Results from analyzing the full module,
 // including call-graph analysis.
 struct ModuleTerminationPassResult {
-  std::map<llvm::Function *, TerminationPassResult> per_function_results;
+  std::map<const llvm::Function *, TerminationPassResult> per_function_results;
 
   // Invalidated when:
   // - FunctionTerminationPass is invalidated
@@ -430,7 +430,7 @@ FunctionTerminationPass::run(llvm::Function &F,
 
 ModuleTerminationPass::Result
 ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
-  std::map<llvm::Function *, TerminationPassResult> per_function_results;
+  std::map<const llvm::Function *, TerminationPassResult> per_function_results;
 
   auto &function_analysis_manager_proxy =
       AM.getResult<llvm::FunctionAnalysisManagerModuleProxy>(IR);
@@ -459,6 +459,17 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
     int count = 0;
     for(llvm::CallGraphNode *node : nextSCC) {
       const llvm::Function *f = node->getFunction();
+      // May be null:
+      // 1. Exported functions get edges "in from" the null node, to represent external calls.
+      //    (We don't care about these.)
+      // 2. Calls that leave this module, or have an indirect function call,
+      //    have calls out to another "null" node.
+      //    Indirect functions are handled at the function-local layer.
+      //    Extern functions are handled as "unknown body".
+      // So we should be fine to skip?
+      if(f == nullptr) {
+        continue;
+      }
       shared_result.explanation = (shared_result.explanation + llvm::demangle(f->getName()));
       if(count < nextSCC.size() - 1) {
         shared_result.explanation += ", ";
@@ -472,10 +483,36 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
       per_function_results[f] = new_result;
     }
   }
-  // TODO
-
   // Step 3 : worklist algorithm on the call graph.
-  // TODO:
+  // Ideally we'd _just_ do worklist, but we don't have a "callers" list, alas.
+  // So we just run N^2: scan through each function, update from callees,
+  // and run again if we updated something.
+  bool stale = true;
+  while(stale) {
+    stale = false;
+    for(auto &F : IR) {
+      TerminationPassResult original = per_function_results[&F];
+      const llvm::CallGraphNode *CGNode = CG[&F];
+      std::vector<TerminationPassResult> results;
+
+      // Update this node from its successors.
+      for(const auto &it : *CGNode) {
+        llvm::CallGraphNode *callee = it.second;
+        if(auto *CalleeF = callee->getFunction(); CalleeF != nullptr) {
+          const auto &result = per_function_results[CalleeF];
+          results.emplace_back(TerminationPassResult{
+            .elt = result.elt,
+            .explanation = "via call to " + llvm::demangle(CalleeF->getName()) + ": " + result.explanation,
+          });
+        }
+      }
+      auto altered = update(original, std::move(results));
+      if (altered.elt != original.elt) {
+        per_function_results[&F] = altered;
+        stale = true;
+      }
+    }
+  }
 
   return ModuleTerminationPassResult{per_function_results};
 }
