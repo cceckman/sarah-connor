@@ -212,6 +212,11 @@ TerminationPassResult basicBlockClassifier(const llvm::BasicBlock &block) {
         // target are, and our CG analysis won't cover it.
         // (CG covers CGSCC/recursion detection, as well as propagating
         // unbounded backwards .)
+        // TODO: Is this necesary, given that we're analyzing calls at the module layer?
+        // The CallGraph has a lot more information about what calls are possible,
+        // and includes a "null" node that indirect calls point to.
+        // Whole-program devirtualization might even take an indirect call and turn it
+        // into a direct call.
         return TerminationPassResult{.elt = DoesThisTerminate::Unknown,
                                      .explanation =
                                          "Performs an indirect function call"};
@@ -304,57 +309,6 @@ bool isExitingBlock(const llvm::BasicBlock &B) {
     return true;
   }
   return terminator->willReturn();
-}
-
-TerminationPassResult
-detect_cgscc_recursion(llvm::Function &F, llvm::FunctionAnalysisManager &FAM) {
-  auto &MAM = FAM.getResult<llvm::ModuleAnalysisManagerFunctionProxy>(F);
-  // Process invalidation based on the outer result;
-  // this makes sure we're invalidated if the LazyCallGraphAnalysis changes.
-  MAM.registerOuterAnalysisInvalidation<llvm::LazyCallGraphAnalysis,
-                                        FunctionTerminationPass>();
-  const llvm::LazyCallGraph *CG =
-      MAM.getCachedResult<llvm::LazyCallGraphAnalysis>(*F.getParent());
-  if (CG == nullptr) {
-    return TerminationPassResult{
-        .elt = DoesThisTerminate::Unknown,
-        .explanation = "no LazyCallGraph for " + llvm::demangle(F.getName()),
-    };
-  }
-  llvm::LazyCallGraph::Node *cg_node = CG->lookup(F);
-  if (cg_node == nullptr) {
-    return TerminationPassResult{
-        .elt = DoesThisTerminate::Unknown,
-        .explanation =
-            "no LazyCallGraph::Node for " + llvm::demangle(F.getName()),
-    };
-  }
-  llvm::LazyCallGraph::SCC *C = CG->lookupSCC(*cg_node);
-  if (C == nullptr) {
-    return TerminationPassResult{
-        .elt = DoesThisTerminate::Unknown,
-        .explanation =
-            "no LazyCallGraph::SCC for " + llvm::demangle(F.getName()),
-    };
-  }
-
-  auto N = C->begin();
-  if (C->size() > 1 || ((*N)->lookup(*N) != nullptr)) {
-    // Recursive SCC:
-    // either >1 node,
-    // or 1 node with a self-edge.
-    return TerminationPassResult{
-        .elt = DoesThisTerminate::Unknown,
-        .explanation =
-            "function " + llvm::demangle(F.getName()) +
-            " is one of a set of mutually recursive functions: " + C->getName(),
-    };
-  }
-  // Otherwise, this is...unevaluated?
-  return TerminationPassResult{
-      .elt = DoesThisTerminate::Bounded,
-      .explanation = "",
-  };
 }
 
 //------------------------------------------------------------------------------
