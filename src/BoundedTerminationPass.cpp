@@ -142,7 +142,8 @@ private:
 class FunctionBoundedTerminationPrinter
     : public llvm::PassInfoMixin<FunctionBoundedTerminationPrinter> {
 public:
-  explicit FunctionBoundedTerminationPrinter(llvm::raw_ostream &OutS) : OS(OutS) {}
+  explicit FunctionBoundedTerminationPrinter(llvm::raw_ostream &OutS)
+      : OS(OutS) {}
   llvm::PreservedAnalyses run(llvm::Function &IR,
                               llvm::FunctionAnalysisManager &FAM);
   // Part of the official API:
@@ -201,33 +202,6 @@ std::string friendly_name_block(llvm::StringRef unfriendly) {
   return result;
 }
 
-TerminationPassResult basicBlockClassifier(const llvm::BasicBlock &block) {
-  for (const auto &I : block) {
-    // Classify instructions based on whether we need to look at their metadata
-    // In particular: call, invoke, callbr (these might have unbounded behavior)
-    if (const auto *CI = llvm::dyn_cast<const llvm::CallBase>(&I)) {
-      if (auto called_function = CI->getCalledFunction();
-          called_function == nullptr) {
-        // Indirect function call; we don't know what the properties of the
-        // target are, and our CG analysis won't cover it.
-        // (CG covers CGSCC/recursion detection, as well as propagating
-        // unbounded backwards .)
-        // TODO: Is this necesary, given that we're analyzing calls at the module layer?
-        // The CallGraph has a lot more information about what calls are possible,
-        // and includes a "null" node that indirect calls point to.
-        // Whole-program devirtualization might even take an indirect call and turn it
-        // into a direct call.
-        return TerminationPassResult{.elt = DoesThisTerminate::Unknown,
-                                     .explanation =
-                                         "Performs an indirect function call"};
-      }
-    }
-  }
-
-  return TerminationPassResult{.elt = DoesThisTerminate::Bounded,
-                               .explanation = "no indirect calls"};
-}
-
 TerminationPassResult join(TerminationPassResult res1,
                            TerminationPassResult res2) {
   TerminationPassResult minResult = std::min(res1, res2);
@@ -237,6 +211,7 @@ TerminationPassResult join(TerminationPassResult res1,
     return maxResult;
   }
 
+  // Does not take the interior edge as part of the lattice.
   if (minResult.elt == DoesThisTerminate::Bounded) {
     if (maxResult.elt == DoesThisTerminate::Unbounded) {
       return TerminationPassResult{
@@ -263,6 +238,8 @@ TerminationPassResult join(TerminationPassResult res1,
   return maxResult;
 }
 
+// TODO: If we fix propagation back towards the BB source,
+// can this be fully replaced with `join`?
 TerminationPassResult update(TerminationPassResult result,
                              std::vector<TerminationPassResult> pred_results) {
 
@@ -287,6 +264,10 @@ TerminationPassResult update(TerminationPassResult result,
   }
 }
 
+// Reports whether the loop is bounded, or unknown.
+// TODO: Report "unbounded" if there is no exit from the loop.
+// TODO: ...and handle the "this function has a loop with no exit";
+// means that we have to propagate back to the entry block, look there.
 TerminationPassResult loopClassifier(const llvm::Loop &loop,
                                      llvm::ScalarEvolution &SE) {
   std::optional<llvm::Loop::LoopBounds> bounds = loop.getBounds(SE);
@@ -300,17 +281,6 @@ TerminationPassResult loopClassifier(const llvm::Loop &loop,
                                    "includes a loop, but it has a fixed bound"};
 }
 
-bool isExitingBlock(const llvm::BasicBlock &B) {
-  // Check whether the terminating instruction of the block is a
-  // "return"-type. https://llvm.org/docs/LangRef.html#terminator-instructions
-  const auto *terminator = B.getTerminator();
-  if (terminator == nullptr) {
-    // TODO: Can we print / capture an error here, or something?
-    return true;
-  }
-  return terminator->willReturn();
-}
-
 //------------------------------------------------------------------------------
 // Pass bodies
 //------------------------------------------------------------------------------
@@ -318,10 +288,10 @@ bool isExitingBlock(const llvm::BasicBlock &B) {
 FunctionTerminationPass::Result
 FunctionTerminationPass::run(llvm::Function &F,
                              llvm::FunctionAnalysisManager &FAM) {
-  if(F.empty()) {
+  if (F.empty()) {
     return FunctionTerminationPass::Result{
-      .elt = DoesThisTerminate::Unknown,
-      .explanation = "has no basic blocks in this module",
+        .elt = DoesThisTerminate::Unknown,
+        .explanation = "has no basic blocks in this module",
     };
   }
 
@@ -333,53 +303,89 @@ FunctionTerminationPass::run(llvm::Function &F,
   // deterministic.
   llvm::SetVector<llvm::BasicBlock *> outstanding_nodes;
 
-  // Step 1 : do local basic block analysis
-  for (auto &basic_block : F) {
-    TerminationPassResult result = basicBlockClassifier(basic_block);
-    blocks_to_results.insert_or_assign(&basic_block, result);
-    outstanding_nodes.insert(&basic_block);
-  }
+  // Step 1 : do local basic block analysis.
+  // We don't need to do this? Assume every instruction terminates,
+  // including call instructions. (We'll handle them at the call-graph layer.)
+  // for (auto &basic_block : F) {
+  //   TerminationPassResult result = basicBlockClassifier(basic_block);
+  //   blocks_to_results.insert_or_assign(&basic_block, result);
+  //   outstanding_nodes.insert(&basic_block);
+  // }
 
-  // Step 2 : do loop-level analysis. We need a ScalarEvolution to get the
-  // loops.
+  // Step 2 : do loop-level analysis.
+  // We need a ScalarEvolution to get the loops.
+  // The blocks_to_results map is empty before we start this.
   for (auto &basic_block : F) {
     llvm::Loop *loop = loop_info.getLoopFor(&basic_block);
     if (loop == nullptr) {
+      // Block is (locally) bounded.
+      blocks_to_results.insert_or_assign(&basic_block,
+                                         TerminationPassResult{
+                                             .elt = DoesThisTerminate::Bounded,
+                                             .explanation = "",
+                                         });
       continue;
     }
+    // If the loop is bounded, we count this node as bounded too.
     auto result = loopClassifier(*loop, SE);
-    auto updated = join(blocks_to_results.at(&basic_block), result);
-    blocks_to_results.insert_or_assign(&basic_block, updated);
+    blocks_to_results.insert_or_assign(&basic_block, result);
   }
+  // All blocks are labeled:
+  // - Bounded if not part of a loop.
+  // - Unbounded if an infinite loop (no exit) -- note, hypothetical, this is a TODO
+  // - Unknown if a loop bound cannot be determined
 
-  // Step 3 : worklist algorithm.
+  // Step 3 : aggregate results.
+  // In order to accurately capture:
+  /*
+  * void maybe_hold(bool stall) {
+  *   if(stall) {
+  *     while(true) {}
+  *   } else {
+  *     return;
+  *   }
+  */
+  // We need to propagate towards the entry block,
+  // then use the entry block to determine the function's result.
+  // Is "worklist towards the entry" equivalent "`join` over all results"?
+  // No, we still do need 'update', with its slightly-different semantics from 'join'.
+
+  // Worklist version (towards source):
+  for(llvm::BasicBlock &block : F) {
+    // We add everything, even the non-exit nodes,
+    // so that we make sure we eventually get back to the entry block.
+    // Consider:
+    // void does_not_terminate(bool stall) {
+    //   if(stall) { // entry block: B1, successors are B2/B3
+    //     while(true) {} // B2: predecessors are is B1, B2, successor is B2
+    //   } else {
+    //     while(true) {} // B3: predecessors are B1, B3, successor is B3
+    //  }
+    //  // B4? Exit block? May not exist, has no predecessors
+    // }
+    // We need to make sure that we propagate from non-exiting paths
+    // (Unbounded) to the entry block; so, add everything to begin with,
+    // and just iterate the worklist until we hit a fixpoint.
+    // We still know it will quiesce due to the convergent nature of update().
+    outstanding_nodes.insert(&block);
+  }
   while (!outstanding_nodes.empty()) {
     llvm::BasicBlock *block = outstanding_nodes.pop_back_val();
     auto original = blocks_to_results.at(block);
     std::vector<TerminationPassResult> results;
-    for (llvm::BasicBlock *predecessor : llvm::predecessors(block)) {
-      results.emplace_back(blocks_to_results.at(predecessor));
+    for (llvm::BasicBlock *successor : llvm::successors(block)) {
+      results.emplace_back(blocks_to_results.at(successor));
     }
     auto altered = update(original, std::move(results));
     blocks_to_results.insert_or_assign(block, altered);
     if (altered.elt != original.elt) {
-      for (auto *successor : llvm::successors(block)) {
-        outstanding_nodes.insert(successor);
+      for (auto *predecessor : llvm::predecessors(block)) {
+        outstanding_nodes.insert(predecessor);
       }
     }
   }
 
-  // Step 4 : join results of exiting blocks
-  TerminationPassResult aggregate_result = {.elt = DoesThisTerminate::Bounded,
-                                            .explanation = ""};
-
-  for (auto const &[key, value] : blocks_to_results) {
-    if (isExitingBlock(*key)) {
-      aggregate_result = join(aggregate_result, value);
-    }
-  }
-
-  return aggregate_result;
+  return blocks_to_results.at(&F.getEntryBlock());
 }
 
 ModuleTerminationPass::Result
@@ -399,41 +405,44 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
   // Take anything in a recursive group and force it Unknown.
   // See also NoRecursionCheck in clang-tidy
   llvm::CallGraph &CG = AM.getResult<llvm::CallGraphAnalysis>(IR);
-  for(llvm::scc_iterator<llvm::CallGraph*> SCCI = llvm::scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
-    if(!SCCI.hasCycle()) {
+  for (llvm::scc_iterator<llvm::CallGraph *> SCCI = llvm::scc_begin(&CG);
+       !SCCI.isAtEnd(); ++SCCI) {
+    if (!SCCI.hasCycle()) {
       // SCC doesn't have a loop. We don't need to update anything.
       continue;
     }
     // SCC has a loop. Update all functions to note they're mutually recursive.
     const std::vector<llvm::CallGraphNode *> &nextSCC = *SCCI;
     TerminationPassResult shared_result = {
-      .elt = DoesThisTerminate::Unknown,
-      .explanation = "part of a call graph that contains a loop: ",
+        .elt = DoesThisTerminate::Unknown,
+        .explanation = "part of a call graph that contains a loop: ",
     };
     int count = 0;
-    for(llvm::CallGraphNode *node : nextSCC) {
+    for (llvm::CallGraphNode *node : nextSCC) {
       const llvm::Function *f = node->getFunction();
       // May be null:
-      // 1. Exported functions get edges "in from" the null node, to represent external calls.
+      // 1. Exported functions get edges "in from" the null node, to represent
+      // external calls.
       //    (We don't care about these.)
       // 2. Calls that leave this module, or have an indirect function call,
       //    have calls out to another "null" node.
       //    Indirect functions are handled at the function-local layer.
       //    Extern functions are handled as "unknown body".
       // So we should be fine to skip?
-      if(f == nullptr) {
+      if (f == nullptr) {
         continue;
       }
-      shared_result.explanation = (shared_result.explanation + llvm::demangle(f->getName()));
-      if(count < nextSCC.size() - 1) {
+      shared_result.explanation =
+          (shared_result.explanation + llvm::demangle(f->getName()));
+      if (count < nextSCC.size() - 1) {
         shared_result.explanation += ", ";
       } else {
         ++count;
       }
     }
-    for(llvm::CallGraphNode *node : nextSCC) {
+    for (llvm::CallGraphNode *node : nextSCC) {
       llvm::Function *f = node->getFunction();
-      const auto new_result =  update(per_function_results[f], {shared_result});
+      const auto new_result = update(per_function_results[f], {shared_result});
       per_function_results[f] = new_result;
     }
   }
@@ -442,21 +451,30 @@ ModuleTerminationPass::run(llvm::Module &IR, llvm::ModuleAnalysisManager &AM) {
   // So we just run N^2: scan through each function, update from callees,
   // and run again if we updated something.
   bool stale = true;
-  while(stale) {
+  while (stale) {
     stale = false;
-    for(auto &F : IR) {
+    for (auto &F : IR) {
       TerminationPassResult original = per_function_results[&F];
       const llvm::CallGraphNode *CGNode = CG[&F];
       std::vector<TerminationPassResult> results;
 
       // Update this node from its successors.
-      for(const auto &it : *CGNode) {
+      for (const auto &it : *CGNode) {
         llvm::CallGraphNode *callee = it.second;
-        if(auto *CalleeF = callee->getFunction(); CalleeF != nullptr) {
+        if (auto *CalleeF = callee->getFunction(); CalleeF != nullptr) {
           const auto &result = per_function_results[CalleeF];
           results.emplace_back(TerminationPassResult{
-            .elt = result.elt,
-            .explanation = "via call to " + llvm::demangle(CalleeF->getName()) + ": " + result.explanation,
+              .elt = result.elt,
+              .explanation = "via call to " +
+                             llvm::demangle(CalleeF->getName()) + ": " +
+                             result.explanation,
+          });
+        } else {
+          // Callee is nullptr. Does that mean it's indirect?
+          // TODO: Not sure; we need more testing of indirect calls.
+          results.emplace_back(TerminationPassResult{
+              .elt = DoesThisTerminate::Unknown,
+              .explanation = "via call to unknown function",
           });
         }
       }
@@ -475,8 +493,7 @@ llvm::PreservedAnalyses
 BoundedTerminationPrinter::run(llvm::Module &IR,
                                llvm::ModuleAnalysisManager &AM) {
   auto &module_results = AM.getResult<ModuleTerminationPass>(IR);
-  for (const auto &[function, result] : module_results.per_function_results)
-  {
+  for (const auto &[function, result] : module_results.per_function_results) {
     OS << "Function name: " << llvm::demangle(function->getName()) << "\n";
     OS << "Result: " << result.elt << "\n";
     OS << "Explanation: " << result.explanation << "\n\n";

@@ -29,6 +29,9 @@
   2. Intra-function termination: the basic blocks in each function
   3. Instruction-level termination: the instructions in each basic block
 
+Long version sidebar: lattice-or-not
+
+
 - (1) Calls:
   - If all functions transitively called by the critical section terminate (2),
   - and the call graph is acyclic,
