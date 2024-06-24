@@ -1,0 +1,215 @@
+
+[00:00:00.000 --> 00:00:17.540]   This is a draft of my talk/blog post on Sarah Connor, which is a termination checker. Analysis
+[00:00:17.540 --> 00:00:32.540]   task in written in C++ for LLVM IR. I worked on this with Anbek Grover and I am CC Ekman.
+[00:00:32.540 --> 00:00:39.700]   So what's the problem we're dealing with? So we have a... I used to work in embedded
+[00:00:39.700 --> 00:00:47.660]   development, and one of the things that you have in embedded development are interrupts.
+[00:00:47.660 --> 00:00:54.300]   The thing about interrupts is that they preempt the normal thread of execution. So you're
+[00:00:54.300 --> 00:01:01.180]   going along with whatever your program is and an interrupt comes in, and you switch
+[00:01:01.180 --> 00:01:07.620]   to this interrupt handler. When the interrupt handler completes, you drop back down to the
+[00:01:07.620 --> 00:01:19.780]   normal thread of execution. This is called the, often an IRQ thread or an interrupt thread.
+[00:01:19.780 --> 00:01:25.980]   So this is all well and good, because it means that you can respond quickly to this interrupt
+[00:01:25.980 --> 00:01:44.460]   when it happens. The problem is that that's not always okay. It's not always okay to get
+[00:01:44.460 --> 00:01:54.860]   interrupted like this. Let's say your interrupt handler sort of puts something into a queue
+[00:01:54.860 --> 00:02:01.240]   and then the thread pulls something out of that queue. Well, depending on how the queue
+[00:02:01.240 --> 00:02:07.860]   is structured, it may not be safe to, when the thread is in the process of pulling out
+[00:02:07.860 --> 00:02:16.820]   of that queue, start a new interrupt handler. Or there's other cases where maybe you have
+[00:02:16.820 --> 00:02:20.340]   multiple threads and they're getting preempted. This is common in operating systems. So you
+[00:02:20.340 --> 00:02:25.920]   have this one, you go to an interrupt, and then you go to this other thread, and then
+[00:02:25.920 --> 00:02:36.460]   it gets interrupted and you drop back down to your original thread. So T2, T1. And maybe
+[00:02:36.460 --> 00:02:43.260]   sometimes you are doing something in this thread where you need it to execute atomically.
+[00:02:43.260 --> 00:02:50.140]   You need to be in thread one, and then even if an interrupt comes in here, then you need
+[00:02:50.140 --> 00:03:00.140]   to continue executing until you reach the end of this critical section, as we call it.
+[00:03:00.140 --> 00:03:04.780]   And once that's done, you can go back to the interrupt, but this portion needs to execute
+[00:03:04.780 --> 00:03:11.700]   atomically. It needs to finish executing before we jump to anything else. Now, the problem
+[00:03:11.700 --> 00:03:24.180]   with critical sections is time, specifically latency. If I have my threaded execution,
+[00:03:24.180 --> 00:03:34.100]   I have my critical section, and if this is, let's say it takes 10 microseconds to execute,
+[00:03:34.100 --> 00:03:40.860]   if an interrupt happens right there, let's say at time is one microsecond, normally without
+[00:03:40.860 --> 00:03:47.620]   the critical section, my interrupt latency would be one microsecond. It would be effectively
+[00:03:47.620 --> 00:04:01.540]   minimal. Maybe it only takes a couple of nanoseconds to jump to that interrupt handler. So without
+[00:04:01.540 --> 00:04:10.420]   that critical section, maybe it's five nanoseconds or something. It's probably closer to 20.
+[00:04:10.420 --> 00:04:18.740]   In order to jump to that other interrupt handler. But with this, now this interrupt gets blocked,
+[00:04:18.740 --> 00:04:29.380]   it gets held all the way until that critical section is done. So now we've added in the
+[00:04:29.380 --> 00:04:36.300]   worst case, the entire latency of this critical section to our interrupt handling latency.
+[00:04:36.300 --> 00:04:43.460]   And it's really bad if this critical section is unbounded, right? We can sort of account
+[00:04:43.460 --> 00:04:50.420]   for well, the longest critical section is, let's say we've measured it and said, okay,
+[00:04:50.420 --> 00:05:02.340]   it's 10 microseconds or whatever. So we say our interrupt latency is about 10 microseconds.
+[00:05:02.340 --> 00:05:07.700]   We know that it's going to be in the worst case, as long as that critical section, that
+[00:05:07.700 --> 00:05:12.000]   longest critical section. If that critical section isn't bounded, and we're going to
+[00:05:12.000 --> 00:05:21.620]   last 30 seconds or something while we are running this thread, then that's really bad.
+[00:05:21.620 --> 00:05:34.740]   We don't have any guarantees of how quickly we can service an interrupt. I realized I
+[00:05:34.740 --> 00:05:45.220]   marked this IRQ, and I should mark that ISR, interrupt service routine. So we don't have
+[00:05:45.220 --> 00:05:54.060]   any interrupt guarantees if we don't have a bounds on interrupt latency. So if we don't
+[00:05:54.060 --> 00:06:08.300]   have any bounds on the critical section, how do we bound the time in that critical section?
+[00:06:08.300 --> 00:06:18.220]   You can do it empirically, right? We can say, well, we've never seen it beyond whatever
+[00:06:18.220 --> 00:06:27.340]   amount of time. And you can get away with that sometimes. It's not very precise. It's
+[00:06:27.340 --> 00:06:45.180]   not very forward. Another way would be to say we have bounds on the work done. So we
+[00:06:45.180 --> 00:06:54.700]   know that it's only going to be some number of instructions. We know that it's only going
+[00:06:54.700 --> 00:07:06.060]   to execute so many instructions. And we have a bounds on those instructions completing.
+[00:07:06.060 --> 00:07:11.580]   So we say, OK, we know that at worst the memory is going to take this long to access. Any
+[00:07:11.580 --> 00:07:18.900]   given instruction is only going to take this long to access on the CPU. And so we in net
+[00:07:18.900 --> 00:07:25.700]   know that these two together mean that we'll only execute for a certain amount of time.
+[00:07:25.700 --> 00:07:37.500]   OK, so how do you get-- and so you can do this upfront with just program analysis without
+[00:07:37.500 --> 00:07:43.420]   ever running the program. And you can sort of do program analysis two ways, right? One
+[00:07:43.420 --> 00:07:53.620]   is just code review. But I like to say that a lot of programming is the process of encoding
+[00:07:53.620 --> 00:08:07.020]   judgment and automating judgment. So can we do it with a computer? Also, humans are faulty.
+[00:08:07.020 --> 00:08:11.900]   We have to get it right every time in code review. Can we get it right once, get our
+[00:08:11.900 --> 00:08:18.660]   algorithm right run once, and then just have the computer do it repeatedly? There's a lot
+[00:08:18.660 --> 00:08:24.860]   of things like this. So I came up with this idea to do this kind of analysis when I was
+[00:08:24.860 --> 00:08:31.500]   working on a system where we had this problem. We were doing these checks with code review.
+[00:08:31.500 --> 00:08:39.740]   And I proposed doing this because there's sort of analogies with LLVM, or I guess it's
+[00:08:39.740 --> 00:08:53.300]   Clang specifically, which is a C and C++ compiler, has something called thread safety annotations.
+[00:08:53.300 --> 00:08:59.220]   These are a big part of the inspiration for this project, where you can say a variable
+[00:08:59.220 --> 00:09:17.380]   is guarded by a mutex. And the compiler will check any time that this variable is accessed,
+[00:09:17.380 --> 00:09:23.900]   this mutex is held. And it will tell you that statically. You don't have to check this rule
+[00:09:23.900 --> 00:09:33.020]   by hand. So this was part of the inspiration. So I proposed writing this. And multiple co-workers
+[00:09:33.020 --> 00:09:46.780]   said isn't this the halting problem? And the answer is no. I'll get to that in a second.
+[00:09:46.780 --> 00:09:54.740]   So for those unfamiliar, what is the halting problem? This was Alan Turing's big result,
+[00:09:54.740 --> 00:10:03.140]   one of his first big results. I think the paper was 1935 or 1938, somewhere in there.
+[00:10:03.140 --> 00:10:16.820]   Very big deal paper. And the key result is something like this. There is no program G
+[00:10:16.820 --> 00:10:46.580]   that for any program F can determine if F terminates. So in general, does this program
+[00:10:46.580 --> 00:10:54.660]   this critical section, does this terminate? In general, you cannot answer that question.
+[00:10:54.660 --> 00:11:03.040]   You cannot come up with an algorithm that for any such program, one of these, will tell
+[00:11:03.040 --> 00:11:23.060]   you that result. And that is unfortunate. So there's no program G that returns a yes
+[00:11:23.060 --> 00:11:30.980]   or no answer. So here's why this isn't the halting problem. I don't actually need to
+[00:11:30.980 --> 00:11:36.620]   answer this question for any possible critical section. I don't even always need to get an
+[00:11:36.620 --> 00:11:43.540]   answer for my programs. So the question that we're dealing with is what I sort of call
+[00:11:43.540 --> 00:12:10.780]   the maybe halting problem, which is to write a program G that for any program F reports
+[00:12:10.780 --> 00:12:34.140]   whether F well, either reports that F terminates in a bounded amount of time. F does not terminate
+[00:12:34.140 --> 00:12:50.340]   is unbounded such programs exist, or that it cannot determine whether or not it terminates.
+[00:12:50.340 --> 00:12:59.740]   And the proof that such a program G exists is trivial. Or that a class program to exist
+[00:12:59.740 --> 00:13:06.500]   is trivial. Does anyone want to help me write this? We'll say define G of F. And what are
+[00:13:06.500 --> 00:13:22.460]   we going to return? We've done it. We've solved the maybe halting problem. We can trivially
+[00:13:22.460 --> 00:13:27.740]   always return I don't know. And we're always accurate because we're not making a statement
+[00:13:27.740 --> 00:13:32.220]   actually about this program, we're making a statement about this program, when we return
+[00:13:32.220 --> 00:13:38.540]   I don't know. If we return a bounded or does not terminate result for F, then we're making
+[00:13:38.540 --> 00:13:45.060]   a statement about F, but we can always fall back to I don't know. Now, this version of
+[00:13:45.060 --> 00:13:54.340]   this program is not useful. However, some of these programs can be useful. You know,
+[00:13:54.340 --> 00:14:04.620]   not universal, but useful. Because if this cannot report, I don't know, if it reports
+[00:14:04.620 --> 00:14:08.780]   anything other than I don't know, then we know that we have a problem. If it reports,
+[00:14:08.780 --> 00:14:16.380]   I don't know, then maybe we need to either enhance our checker, or we need to rewrite
+[00:14:16.380 --> 00:14:21.900]   our program such that the automated reasoning can cover it. Or we need to put in some sort
+[00:14:21.900 --> 00:14:29.580]   of escape hatch such that the automated reasoner will just assume our result is correct. An
+[00:14:29.580 --> 00:14:37.220]   analogy here is the Rust borrow checker, which remains one of my favorite sort of pieces
+[00:14:37.220 --> 00:14:43.980]   of software to have in my workflow. The borrow checker can't always reason about whether
+[00:14:43.980 --> 00:14:51.060]   your use of memory and pointers is correct. Correct with respect to lifetime safety and
+[00:14:51.060 --> 00:14:57.900]   bounds checking and all of that. It can't always reason about that. And if it gives
+[00:14:57.900 --> 00:15:05.460]   you a result that says, this is, you know, I don't, I don't check this, I don't believe
+[00:15:05.460 --> 00:15:12.460]   that this is correct, you have three options. One is, if you're really, really sure, you
+[00:15:12.460 --> 00:15:26.360]   can use unsafe. You can say, believe me. You can update the borrow checker. And there's
+[00:15:26.360 --> 00:15:31.700]   lots of efforts where they've, they've enhanced what's going on in here to make it more precise,
+[00:15:31.700 --> 00:15:39.700]   to add non-lexical lifetimes and split borrows and enhancing it to make it more precise,
+[00:15:39.700 --> 00:15:46.340]   right, not less accurate, but more precise so that it can accept more things and reason
+[00:15:46.340 --> 00:15:55.980]   about more things. Or you can restructure your program in order to make it something
+[00:15:55.980 --> 00:16:00.860]   that adheres to these limits or that pushes them to a runtime check rather than a compile
+[00:16:00.860 --> 00:16:06.500]   time check. Any of these things, you have these options. And so we're looking at the
+[00:16:06.500 --> 00:16:11.700]   same thing, right? If we get a result that says, I don't know, that can still be useful
+[00:16:11.700 --> 00:16:24.820]   to us, even if it's not, not always, even if we get it more than we would like. So,
+[00:16:24.820 --> 00:16:36.940]   all that said, how do we make a useful one of these, right? A non-trivial one. So, the
+[00:16:36.940 --> 00:16:45.460]   main thing that we're, we're concerned with is we're going to go ahead and assume that
+[00:16:45.460 --> 00:16:55.100]   every instruction terminates. This isn't actually strictly true. I've run into systems where
+[00:16:55.100 --> 00:17:02.460]   you'll do an MMIO operation and it will hang forever because it's waiting on some peripheral
+[00:17:02.460 --> 00:17:08.220]   that doesn't respond. We're not concerned with that here. That is outside of the scope
+[00:17:08.220 --> 00:17:15.140]   of this problem. If you are doing such an access, that's a program level, that's a problem
+[00:17:15.140 --> 00:17:18.500]   with that load that you're doing that in the critical section. It's not something that
+[00:17:18.500 --> 00:17:25.140]   we expect to detect. But, so we can start by assuming that. And then we can start thinking
+[00:17:25.140 --> 00:17:32.660]   about, well, what properties are we really looking for? And an easy and fairly naive
+[00:17:32.660 --> 00:17:39.060]   way of getting some sort of a useful result is, so we'll call this version one, which
+[00:17:39.060 --> 00:17:53.060]   is no loops. If there are no cycles in the control flow graph of whatever sub-program
+[00:17:53.060 --> 00:18:01.300]   we're analyzing, then we will, then it will eventually terminate, right? So, this assumption
+[00:18:01.300 --> 00:18:10.260]   ensures progress of an individual instruction. This ensures progress through groups of instructions.
+[00:18:10.260 --> 00:18:19.540]   And so eventually we will reach a terminator for this sub-program. So, more specifically,
+[00:18:19.540 --> 00:18:32.580]   what we're saying is basic block control flow graph, that is intra-function control flow
+[00:18:32.580 --> 00:18:37.940]   graph, is a DAG, directed acyclic graph. So, if it is a directed acyclic graph, so you
+[00:18:37.940 --> 00:18:43.860]   can have go-tos, but there are no cycles in it. So, you're always going to progress through
+[00:18:43.860 --> 00:18:48.740]   it. And the longest path through that DAG, from the start to some termination, gives
+[00:18:48.740 --> 00:18:52.260]   us our longest bound. And we're not going to try to measure that right now, but it gives
+[00:18:52.260 --> 00:19:03.380]   us, like, there is a bound. We also need, so let me put in hand conditioning there. The
+[00:19:03.380 --> 00:19:17.060]   call graph is a DAG, or it is acyclic, right? So, this is at the basic block level, a loop,
+[00:19:17.060 --> 00:19:24.420]   a cycle in basic blocks indicates a loop. A cycle in the call graph indicates recursion.
+[00:19:24.420 --> 00:19:33.940]   So, if we have these two properties, and we assume this property, we'll always have progress
+[00:19:33.940 --> 00:19:40.260]   between functions, we'll always have progress within a function. So, if all of our functions
+[00:19:40.260 --> 00:19:45.940]   that we're calling this adhere to these properties, then, great, we're done. We can actually say,
+[00:19:46.500 --> 00:19:54.340]   yes, this will terminate. And that is a useful result. So, how do we get this analysis?
+[00:19:54.340 --> 00:20:06.740]   LLVM has these analysis passes. So, an LLVM analyzer will get us a call graph.
+[00:20:06.740 --> 00:20:15.380]   It'll tell us for every function what are the functions that it calls. And it has specifically
+[00:20:15.380 --> 00:20:26.500]   a call graph SCC. SCC stands for simply connected components, which is a term that I learned from
+[00:20:26.500 --> 00:20:33.140]   Anbei, who I worked on this with. And it refers to a portion of a graph where all of the nodes have
+[00:20:33.140 --> 00:20:40.980]   some path to every other node in that graph. So, we can look at these simply connected components,
+[00:20:40.980 --> 00:20:48.100]   and LLVM will actually tell us if there is a cycle in this simply connected component.
+[00:20:48.100 --> 00:20:53.220]   If there is, then we know that there is recursion in this portion of our call graph, and we know
+[00:20:53.220 --> 00:20:59.060]   that we have a problem, we need to say I can't guarantee that this will terminate. LLVM also
+[00:20:59.060 --> 00:21:12.260]   gives us a basic block structure within a function. And that can also give us a set of SCCs
+[00:21:12.260 --> 00:21:18.820]   at that level. And again, we can check that for cycles. And if there are cycles, we can report,
+[00:21:18.820 --> 00:21:26.100]   yeah, I can't make any guarantees. So, we've written analysis passes that will do this,
+[00:21:26.100 --> 00:21:33.300]   and we'll report back basically for, okay, so there's one other level which is sort of,
+[00:21:33.300 --> 00:21:36.500]   you can get these results for an individual component, and then
+[00:21:36.500 --> 00:21:42.980]   propagate through the call graph and the basic blocks. And there's some sort of wiring that you
+[00:21:42.980 --> 00:21:47.780]   have to do for this. But the basic idea is that you can, once you have a result from one of these,
+[00:21:47.780 --> 00:21:55.860]   you can say, well, so this function has a loop in it, let me propagate that to the other portions
+[00:21:55.860 --> 00:22:00.340]   of this. Therefore, if you take this path, you will get this result, propagate that up to the
+[00:22:00.340 --> 00:22:06.740]   call graph layer. And so then you can say, well, this function, it calls, you know, it only calls
+[00:22:06.740 --> 00:22:12.100]   things which are in a DAG, but it calls a function which is not guaranteed to terminate.
+[00:22:12.100 --> 00:22:23.140]   Therefore, I guess this is the other condition is that each function in call graph
+[00:22:24.420 --> 00:22:30.660]   meets this criterion. So, that's probably a more precise phrasing is start with this,
+[00:22:30.660 --> 00:22:39.940]   go to this, and then make this assumption. So, this is progress at the call layer,
+[00:22:39.940 --> 00:22:45.540]   this is progress at the basic block layer, so progress through basic blocks,
+[00:22:45.540 --> 00:22:59.780]   and this is progress through instructions. Okay, so this is itself useful, right? This will
+[00:22:59.780 --> 00:23:05.620]   basically check for us, there's no recursion, there's no loops, and that is enough for us to accept
+[00:23:05.620 --> 00:23:11.940]   some set of programs, some simple set of programs, but some set of programs, and make a guarantee
+[00:23:11.940 --> 00:23:17.620]   that they will complete in a bounded amount of time. We can get slightly more sophisticated,
+[00:23:17.620 --> 00:23:23.220]   though, by doing the same as the above, but loosening the restrictions. So, we're still going
+[00:23:23.220 --> 00:23:30.420]   to say condition one, which is call graph is a DAG. So, we're still not allowing mutual recursion,
+[00:23:30.420 --> 00:23:35.220]   basically, because we don't have a good way to reason about it. There's definitely research on
+[00:23:35.220 --> 00:23:44.340]   this, but we have not done it. So, we're skipping that for now. Two is that the intra-function
+[00:23:44.340 --> 00:24:04.980]   control photograph. Only either is a DAG. So, let's actually say is a DAG of SCC, it's because
+[00:24:04.980 --> 00:24:19.700]   the one in the SCC is otherwise, and each SCC is bounded. So, there are some kinds of loops
+[00:24:19.700 --> 00:24:26.420]   where the compiler can actually determine, yes, this loop is bounded. So, if you have, for instance,
+[00:24:26.420 --> 00:24:37.220]   a sort of canonical for loop, for int i is zero, i is less than five, increment i,
+[00:24:37.220 --> 00:24:48.980]   do stuff in here. The compiler can reason that this is bounded as long as this is bounded.
+[00:24:48.980 --> 00:24:54.980]   So, as long as this loop body completes in a finite amount of time, it will complete a
+[00:24:54.980 --> 00:25:00.580]   finite number of loops. Therefore, overall, it is bounded even though there is a loop.
+[00:25:00.580 --> 00:25:11.940]   So, this would be a really useful result to get. Luckily, LLVM makes this easy for us because it
+[00:25:11.940 --> 00:25:19.620]   has this thing called the loop pass. There's actually a few different kinds of loop passes.
+[00:25:21.780 --> 00:25:29.300]   One of them canonicalizes loops into a way that LLVM likes to analyze, but one of them will give
+[00:25:29.300 --> 00:25:44.100]   us the SCCs and will tell us if they are bounded. And this analysis, again, is accurate but not
+[00:25:44.100 --> 00:25:55.060]   precise. It is conservative. If LLVM tells us it is bounded, we believe that it is bounded,
+[00:25:55.060 --> 00:26:00.900]   and we'll use that result. If LLVM tells us that it is not bounded, well, maybe we humans
+[00:26:00.900 --> 00:26:08.420]   can reason that it is bounded, but the compiler can't. And so, we're, again, returning that as a
+[00:26:08.420 --> 00:26:14.580]   "I can't tell." Our analysis is not sophisticated enough to do the same reasoning that a human
+[00:26:14.580 --> 00:26:22.100]   would. And that's okay. We're only asking it to do what it can do, and we'll punt that back to the
+[00:26:22.100 --> 00:26:28.580]   humans if it gets a result that I can't reason that. So, this gives us more things that we can
+[00:26:28.580 --> 00:26:33.220]   say will make progress within a function, and we're going to keep that third criterion of
+[00:26:33.780 --> 00:26:41.860]   instruction progress. So, this is what we have implemented, or what we think we have implemented,
+[00:26:41.860 --> 00:26:48.420]   is this kind of analysis which runs through every function in an LLVM module and tries to do this.
+[00:26:48.420 --> 00:26:55.620]   And it works. The results that we have seem to be accurate based on our expectations of the
+[00:26:55.620 --> 00:27:04.900]   limitations of this. There are a few limitations. One limitation is assumption of instruction
+[00:27:04.900 --> 00:27:19.700]   progress. Another is that we only have LLVM IR analysis, so we're limited in the languages
+[00:27:19.700 --> 00:27:30.020]   that we can do. We're relying on LLVM's loop passes. Another is that this is Intramodule.
+[00:27:30.020 --> 00:27:44.900]   So, this is a sort of a .O file for C or C++. It is a crate in Rust, which we haven't tested yet.
+[00:27:49.060 --> 00:27:58.500]   So, we can't peek across calls that go between modules. So, if you call malloc,
+[00:27:58.500 --> 00:28:12.020]   we consider malloc. We don't know whether this will terminate, and so that sort of poisons your
+[00:28:12.020 --> 00:28:20.500]   whole graph if you're doing this sort of thing. As long as you're not... Well, the real problem here
+[00:28:20.500 --> 00:28:33.540]   is intrinsics. LLVM will insert, or the compiler will insert, these intrinsic operations like
+[00:28:33.540 --> 00:28:43.780]   lifetime_stark or other sort of bookkeeping things in order to provide injection points for things
+[00:28:43.780 --> 00:28:50.340]   like other sorts of analysis passes or dynamic analysis. And we don't have a model for those.
+[00:28:50.340 --> 00:28:57.460]   We have not classified those intrinsics in order to say yes or no, this will terminate or this
+[00:28:57.460 --> 00:29:07.300]   won't terminate. The sort of more general case of this is bypasses. We would like to be able to say
+[00:29:07.300 --> 00:29:14.100]   something like malloc and give it an annotation.
+[00:29:14.100 --> 00:29:26.580]   Assume that it terminates. Now, maybe malloc isn't a good idea for this, but something like
+[00:29:27.540 --> 00:29:38.180]   what's a good example, LLVM lifetime_stark or something like that. So, for these intrinsics.
+[00:29:38.180 --> 00:29:48.340]   Or if you have my_special_function, you'd want to say the same thing. Actually, a really important
+[00:29:48.340 --> 00:30:02.740]   one of these is atomic, let's say fetch_add, which is an intrinsic in the IR, but it compiles
+[00:30:02.740 --> 00:30:10.020]   to a loop on some architectures because basically you have to try a memory operation that's
+[00:30:10.020 --> 00:30:19.700]   weekly ordered and then retry it several times. So you may want to annotate that as assume something,
+[00:30:19.700 --> 00:30:28.260]   bounded or unbounded. But also, if you have your own function where, well, you have a guarantee
+[00:30:28.260 --> 00:30:34.980]   that this list will be bounded by some maximum and you're going to go over each item in the list,
+[00:30:34.980 --> 00:30:39.940]   but there's only going to be a bounded number of items in it, LLVM might not be able to tell
+[00:30:39.940 --> 00:30:48.660]   that, but you can. You may be able to say, yes, that's fine. I know that this will be terminated,
+[00:30:48.660 --> 00:30:53.140]   and therefore, please just assume that this function is good. And then you can rely on
+[00:30:53.140 --> 00:31:00.180]   that analysis and other things. So this is sort of the moral equivalent of unsafe for the borrow
+[00:31:00.180 --> 00:31:07.380]   checker. You are telling the analyzer, I know you can't prove it, but I believe it to be true, and
+[00:31:08.260 --> 00:31:13.140]   so just trust me on this. And that is a perfectly fine thing for us to include. We just haven't
+[00:31:13.140 --> 00:31:22.740]   figured out how to actually get it to work with LLVM. So that is what we have. And if you want to
+[00:31:22.740 --> 00:31:29.380]   try it out, the repo is in my GitHub. And yeah, I look forward to talking with you more about it
+[00:31:29.380 --> 00:31:30.900]   if anyone is interested.
+
