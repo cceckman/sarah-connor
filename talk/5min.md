@@ -2,6 +2,8 @@
 
 ...in 5 minutes.
 
+---
+
 ## Motivation
 
 Charles used to work on embedded software.
@@ -12,9 +14,13 @@ Charles used to work on embedded software.
 
 As a design principle, we always want these to run in **a bounded amount of time**.
 
-Charles' team enforced that via code review. **Can we check it automatically?**
+**Can we check it automatically?**
+
+---
 
 ## Bounding boundedness
+
+---
 
 ### The Halting Problem
 
@@ -22,7 +28,9 @@ Charles' team enforced that via code review. **Can we check it automatically?**
 
 <!-- ...is what my coworkers said. Quick refresher: -->
 
-> Is it possible to write a program `A` that, given any program `B` and input `I`,
+> Is it possible to write a program `A` that,  
+> 
+> given any program `B` and input `I`,
 >
 > reports whether or not `B(I)` terminates?
 
@@ -36,64 +44,150 @@ Answer:
 
 Rice's theorem generalizes this to other properties.
 
-### The Maybe-Halting Problem
+---
+
+### The Maybe Halting Problem
 
 <!-- We just want something that can _sometimes_ give an answer. -->
 
-> Is it possible to write a program `A` that, given any program `B` and input `I`,
+> Is it possible to write a program `A` that,
+>
+> given any program `B` and input `I`,
+>
 > reports one of:
 >
 > - `B(I)` terminates
 > - `B(I)` does not terminate
 > - `A` cannot determine whether `B(I)` terminates
 
-Answer:
+Can we do that?
+
 
 > **Yes.**
->
-> ```python
-> def analyze(b, i):
->   return "I don't know"
-> ```
 
-<!-- OK, but can we get anything other than a trivial IDK? Yes, for some programs. -->
-
-### Program analysis: useful, not universal
+```python
+def analyze(b, i):
+  return "I don't know"
+```
 
 <!--
-Program analysis can be useful without being universal.
-Even if you have an analysis that is precise for only some programs,
-that's still useful for those programs.
--->
+---
 
-- Accuracy: gives true answers
-  - "This checker can't check" is definitionally true :)
-- Precision: gives the most specific answer possible
+### Borrow checker
 
-Accuracy is _required_, precision is _useful_.
-
-<!-- Even an imprecise answer is actionable. -->
-
-### e.g. `borrowck`
-
-Rust's borrow-checker says either:
+Rust's borrow-checker says one of
 
 1.  "I have proven this is safe"
 2.  "I have not proven this is safe"
 
-Some safe programs hit (2). Either:
+In (2), address the problem by
 
-- **Change code** into provably-safe subset
-- **Escape** into `unsafe` (axiomatize)
-- **Make a better prover**: add non-lexical lifetimes, Polonius, etc.
+1. **Change code** into provably-safe subset
+2. **Escape** into unsafe (axiomatize)
+3. **Make a better prover** add non-lexical lifetimes, Polonius, etc.
 
-<!-- We can do better than IDK for our prover too! -->
+We can do (3)!
+-->
+
+---
+
+## It works!
+
+```c
+volatile int x = 0;
+
+int bounded_loop() {
+    for(int i = 0; i < 10000; i++) {
+        x += i;
+    }
+    return x;
+}
+
+int unbounded_loop() {
+    while(1) {
+        x += 1;
+    }
+    return x;
+}
+
+int main() {
+    int x;
+    [[clang::noinline]] x = bounded_loop();
+    [[clang::noinline]] x = unbounded_loop();
+    x += 1;
+    return x;
+}
+```
+
+---
+
+## It works!
+
+```
+Function name: bounded_loop
+Result: Bounded
+Explanation: includes a loop, but it has a fixed bound
+
+Function name: unbounded_loop
+Result: Unknown
+Explanation: includes loop with indeterminate bounds
+
+Function name: main
+Result: Unknown
+Explanation: via call to unbounded_loop: includes loop with indeterminate bounds
+```
+
+---
 
 ## Sarah Connor
 
-LLVM analysis pass (C, C++, Rust, ...)
+LLVM analysis pass (C, C++, Rust, Zig if you want)
 
-### Call graph loops
+If:
+
+- The call graph terminates
+- Each function terminates
+- Each instruction terminates
+
+The program terminates!
+
+---
+
+### Call graph (good)
+
+```c
+int add(int a, int b) {
+  return a + b;
+}
+
+int mult(int a, int b) {
+  int x = 0;
+  for(int i = 0; i < a; i++) {
+    x = add(x, b);
+  }
+  return x;
+}
+```
+
+![Call graph of the above code](mult.svg)
+
+---
+
+### Call graph (bad: recursion)
+
+```c
+int add(int a, int b) {
+  return a + b;
+}
+
+int fib(int n) {
+  return add(fib(n-1), fib(n-2));
+}
+```
+
+![](fib.svg)
+
+**"I don't know"**
 
 <!-- Diagram?
 
@@ -108,20 +202,47 @@ so we classify this as "I don't know."
 
 --->
 
-### Control flow loops
+---
 
-<!-- Diagram?
+### Control flow
 
-If the graph of basic blocks is a DAG, and each instruction completes,
-eventually the function completes.
+```c
+int mult(int a, int b) {
+  int x = 0;
+  for(int i = 0; i < a; i++) {
+    x = add(x, b);
+  }
+  return x;
+}
+```
 
-If there's a loop, it _may not_ complete.
+![](mult-cfg2.svg)
 
-Conservative approach would be: if there's a loop, we say "I don't know."
+**Is the loop bounded?**
 
--->
+"I don't know"
 
-### Control flow loops, but better
+---
+
+### Control flow (better)
+
+```c
+int mult(int a, int b) {
+  int x = 0;
+  for(int i = 0; i < a; i++) {
+    x = add(x, b);
+  }
+  return x;
+}
+```
+
+![](mult-cfg2.svg)
+
+**Is the loop bounded?**
+
+Use LLVM analysis!
+
+"Loop is bounded" --> "Function terminates"
 
 <!-- 
 
@@ -137,45 +258,37 @@ when one in principle exists. That's OK; we treat "unbounded loop" as
 
 -->
 
+---
+
 ### Instructions terminate
 
-Not true in an embedded context (!)
+**Assumed.**
+
+Not actually true in an embedded context!
 
 But out of scope of this checker.
 
-## Results
-
-If:
-
-- The function call graph is acyclic, and
-- Each function's control flow graph is either
-  - acyclic, or
-  - cyclic with computible bounds on the cycle, and
-- Each instruction terminates
-
-the program terminates.
-
-
-
-### It works!
-
-<!-- TODO: Show some code & results -->
-
 ### It doesn't work!
-
-<!-- Some stuff that's kinda necessary, but we haven't worked out: -->
 
 - Escape hatches (own code, LLVM intrinsics)
   - We couldn't figure out the LLVM infrastructure for this
-- Result invalidation (an LLVM concept)
-  - Time is precious :)
+- LLVM result invalidation (bookkeeping)
+
+???
+
+Some stuff that's necessary for it to be really usable, but we haven't worked out.
+
+---
 
 ### It could be better!
-
-<!-- Some enhancements that would make it more useful: -->
 
 - Cross-module analysis
 - Recursion
 - Indirect calls
 - Test it on Rust (in principle "just works"?)
+
+???
+
+A bunch of ways that it could be better.
+
 
