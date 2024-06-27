@@ -2,6 +2,14 @@
 
 ...in 5 minutes.
 
+https://github.com/cceckman/sarah-connor
+
+???
+
+P to enter presentation mode
+
+C from there to start a present-able window
+
 ---
 
 ## Motivation
@@ -15,10 +23,6 @@ Charles used to work on embedded software.
 As a design principle, we always want these to run in **a bounded amount of time**.
 
 **Can we check it automatically?**
-
----
-
-## Bounding boundedness
 
 ---
 
@@ -70,24 +74,7 @@ def analyze(b, i):
   return "I don't know"
 ```
 
-<!--
----
-
-### Borrow checker
-
-Rust's borrow-checker says one of
-
-1.  "I have proven this is safe"
-2.  "I have not proven this is safe"
-
-In (2), address the problem by
-
-1. **Change code** into provably-safe subset
-2. **Escape** into unsafe (axiomatize)
-3. **Make a better prover** add non-lexical lifetimes, Polonius, etc.
-
-We can do (3)!
--->
+...can we do something _useful_ though?
 
 ---
 
@@ -189,7 +176,7 @@ int fib(int n) {
 
 **"I don't know"**
 
-<!-- Diagram?
+???
 
 If the call graph is a DAG, and each function completes, eventually the program completes.
 
@@ -199,8 +186,6 @@ We haven't implemented any reasoning about whether recursion is bounded,
 so we classify this as "I don't know."
 
 (Also conservative for embedded b/c of stack size; recursion needs to be bounded for other reasons.)
-
---->
 
 ---
 
@@ -244,7 +229,7 @@ Use LLVM analysis!
 
 "Loop is bounded" --> "Function terminates"
 
-<!-- 
+???
 
 There's a decent amount of literature on loop unrolling and/or bounding.
 It winds up being an important optimization that compilers can perform.
@@ -256,22 +241,28 @@ LLVM's analysis is, like ours, conservative; it sometimes can't find a bound
 when one in principle exists. That's OK; we treat "unbounded loop" as
 "I don't know".
 
--->
-
 ---
 
 ### Instructions terminate
 
 **Assumed.**
 
-Not actually true in an embedded context!
+(Not true. Ask Charles for fun stories.)
+
+???
+
+Not necessarily true, in an embedded context.
 
 But out of scope of this checker.
+
+---
 
 ### It doesn't work!
 
 - Escape hatches (own code, LLVM intrinsics)
-  - We couldn't figure out the LLVM infrastructure for this
+
+  We couldn't figure out the LLVM infrastructure for this
+
 - LLVM result invalidation (bookkeeping)
 
 ???
@@ -291,4 +282,12 @@ Some stuff that's necessary for it to be really usable, but we haven't worked ou
 
 A bunch of ways that it could be better.
 
+---
+
+## Thanks!
+
+https://github.com/cceckman/sarah-connor
+
+
+.bigimg[![](terminator.jpg)]
 
